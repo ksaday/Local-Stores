@@ -156,7 +156,7 @@ Same codebase, different entrypoint — imports the API's domain services so bus
 
 | Integration | Design |
 |-------------|--------|
-| **Stripe** | `infra/stripe` wraps the SDK; per-store operations always pass the store's connected account. Destination charges with `application_fee_amount` from the plan's `platform_fee_bps`. Webhooks: verify signature → persist `stripe_events` row (unique id) → enqueue → handler is idempotent |
+| **Stripe** | `infra/stripe` wraps the SDK; per-store operations always pass the store's connected account. Destination charges with **`application_fee_amount` omitted entirely** — BBA takes no cut of sales, and the effective rate resolves to 0 for every store ([§18.6](18-final-recommendations.md#186-transaction-fee--zero-and-stated-publicly)). Omit rather than pass zero, so no fee line appears on the store's statement; a test asserts this holds. Webhooks: verify signature → persist `stripe_events` row (unique id) → enqueue → handler is idempotent |
 | **Payments abstraction** | A `PaymentProvider` interface (`createIntent`, `capture`, `refund`, `onboardAccount`) with a Stripe implementation. Square/PayPal (FR-PAY-08) implement the same interface without touching order logic |
 | **Email/SMS/Push** | `NotificationChannel` interface with SES/Twilio/WebPush implementations; templates (MJML → HTML) rendered in the worker with store branding |
 | **Storage** | Presigned S3 uploads; the API never proxies image bytes. Post-upload validation pipeline in §13.7 |

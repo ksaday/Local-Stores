@@ -14,10 +14,13 @@ here: read it before making changes that contradict it, and record any deviation
 |---|---|
 | **Scope** | Retail commerce only for v2.0. Service-business threads, internal messaging, and accounting deferred to v2.1 ([§17](docs/plan/17-future-enhancements.md)) |
 | **Pricing** | $49 per store per month, 30-day free trial. Single plan — no tiers in v2.0 ([§18.5a](docs/plan/18-final-recommendations.md)) |
+| **Transaction fee** | **None.** BBA takes no cut of a store's sales — `application_fee_amount` is omitted from PaymentIntents entirely, and the commitment is stated in-product. Revenue is the subscription alone ([§18.6](docs/plan/18-final-recommendations.md)) |
 | **Launch market** | Illinois, concentrated on Chicago and its suburbs. Lower 48 eventually — tax sits behind a `TaxProvider` interface so expansion is a swap, not a migration ([§18.5b](docs/plan/18-final-recommendations.md)) |
 | **Store onboarding** | SuperAdmin-operated AI opening agent, in-app ([§19](docs/plan/19-ai-onboarding-agent.md)) |
 | **Migration** | None needed — no live stores on the predecessor. Fresh build with seeded fixtures |
-| **Still open** | Whether to take a per-transaction fee on top of the subscription ([§18.6](docs/plan/18-final-recommendations.md)) — must be decided before Phase 8 |
+
+All product decisions are settled; none are outstanding. The full decision log with
+consequences is [§18.5](docs/plan/18-final-recommendations.md).
 
 A predecessor Firebase MVP (BBA3) exists locally and is not part of this repository. It
 implemented and validated every workflow described in the plan, and is the reason these

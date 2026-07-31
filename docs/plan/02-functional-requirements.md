@@ -109,7 +109,9 @@ Requirement IDs are stable and referenced from the [roadmap](15-development-road
 
 | ID | Requirement | Pri |
 |----|-------------|-----|
-| FR-PAY-01 | Card payments via **Stripe Connect destination charges** to the store's connected account; platform fee (per-plan bps) deducted automatically. One connected account per store — never shared (BBA3 invariant). | M |
+| FR-PAY-01 | Card payments via **Stripe Connect destination charges** to the store's connected account. One connected account per store — never shared. | M |
+| FR-PAY-01b | **BBA takes no per-transaction fee.** `application_fee_amount` is omitted from the PaymentIntent entirely (not passed as zero), so no fee line appears on a store's Stripe statement. A test asserts no PaymentIntent is ever created carrying a non-zero application fee ([§18.6](18-final-recommendations.md#186-transaction-fee--zero-and-stated-publicly)). | M |
+| FR-PAY-01c | The no-fee commitment is stated in-product: on the store application flow, the plan panel in store settings, and the platform marketing surface. If a per-transaction fee is ever introduced, **every store existing at that moment is grandfathered at 0 bps permanently** — which is why the rate is expressible per store, not only per plan. | M |
 | FR-PAY-02 | Card data never touches BBA servers (Stripe Elements / Payment Element; PCI SAQ-A scope). | M |
 | FR-PAY-03 | Cash/check at pickup or delivery: order confirmed by staff; cash marked received by a staff member holding `payments:collect-cash` (successor of BBA3's authorized-receiver flow). | M |
 | FR-PAY-04 | Refunds (full/partial) by staff with `orders:refund`, processed through the originating store's Stripe account only; cash refunds recorded manually. | M |

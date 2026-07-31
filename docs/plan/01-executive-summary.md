@@ -25,6 +25,7 @@ BBA's differentiator is **operational fidelity**: the software mirrors how a phy
 | **Real-store workflows** | Order lifecycle mirrors physical fulfillment (confirm → prepare → ready → pickup/delivery), including cash payments and walk-in POS sales. |
 | **Customer ownership** | Customers register once, shop many stores, and each store sees only *its* relationship with that customer. |
 | **Platform as landlord, not operator** | Super Admin approves/suspends stores, manages subscriptions, monitors health — never operates stores. |
+| **No cut of the merchant's sales** | $49/month, flat. BBA takes no per-transaction fee, and says so on every surface a merchant sees. Revenue scales with how many stores we serve, never with how well any one of them does ([§18.6](18-final-recommendations.md#186-transaction-fee--zero-and-stated-publicly)). |
 
 ## 1.4 Scope of this document set
 

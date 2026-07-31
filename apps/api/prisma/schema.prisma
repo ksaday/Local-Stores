@@ -118,7 +118,19 @@ model Store {
   stripeAccountId      String?      @unique @map("stripe_account_id")
   stripeChargesEnabled Boolean      @default(false) @map("stripe_charges_enabled")
   cashEnabled          Boolean      @default(true) @map("cash_enabled")
-  platformFeeBps       Int?         @map("platform_fee_bps")
+
+  /// Per-transaction platform fee, in basis points. NULL inherits the plan's rate.
+  ///
+  /// BBA publicly commits to taking no cut of a store's sales (docs/plan §18.6), so
+  /// this is 0 everywhere and `application_fee_amount` is omitted from PaymentIntents
+  /// entirely rather than passed as zero — a zero fee still prints a fee line on the
+  /// merchant's Stripe statement, which contradicts the promise.
+  ///
+  /// This lives on the store as well as the plan on purpose: if a per-transaction fee
+  /// is ever introduced, every store existing at that moment must be grandfathered at
+  /// 0 permanently, and that requires a per-store value no future plan change can
+  /// override. Setting this to a non-zero value is a trust decision, not a config one.
+  platformFeeBps       Int?         @default(0) @map("platform_fee_bps")
   approvedAt           DateTime?    @map("approved_at")
   createdAt            DateTime     @default(now()) @map("created_at")
   updatedAt            DateTime     @updatedAt @map("updated_at")

@@ -83,7 +83,7 @@ The existing repository is not throwaway work — it is a working nine-phase imp
 
 ## 18.5 Business decisions — resolved
 
-All six are now decided. Recorded here as the authoritative log; each one's consequences are reflected in the sections named.
+**All seven are decided; none remain open.** Recorded here as the authoritative log; each one's consequences are reflected in the sections named.
 
 | # | Decision | Answer | Changes |
 |---|----------|--------|---------|
@@ -93,6 +93,7 @@ All six are now decided. Recorded here as the authoritative log; each one's cons
 | 4 | **Geographic scope** | **Illinois (Chicago metro) at launch → lower 48 eventually** | §18.5b below; §2.3, §17.2 |
 | 5 | **Team** | **Claude Code driving the build**, with human review at phase boundaries | §15 sequencing |
 | 6 | **Agent operator model** | **SuperAdmin-only, in-app** | §19 |
+| 7 | **Transaction fee** | **Zero, stated publicly.** Revenue is the subscription alone | §18.6; §2.8, §8.2 |
 
 ### 18.5a Pricing — $49/store/month
 
@@ -129,25 +130,30 @@ What single-state simplifies:
 
 Added to [§17.2](17-future-enhancements.md#172-v22--growth-features-612-months) as a v2.x item with an explicit trigger: **the first store outside Illinois.**
 
-## 18.6 The one decision still open: transaction fee
+## 18.6 Transaction fee — zero, and stated publicly
 
-$49/month settles the subscription. It does **not** settle whether BBA also takes a cut of each sale via Stripe's `application_fee_amount` — the `platform_fee_bps` field exists on both `plans` and `stores` and is currently unset.
+**Decided: `platform_fee_bps = 0`. BBA takes no cut of any store's sales, and says so on the storefront-facing marketing surface.**
 
-**Recommendation: set it to 0 and say so loudly.**
-
-| | Flat $49, no transaction fee | $49 + a few percent |
+| | Flat $49, no transaction fee ✅ | $49 + a few percent |
 |---|---|---|
-| Pitch to a mom-and-pop store | *"$49 a month. We don't take a cut of your sales."* | Requires explaining a variable cost |
+| Pitch to a mom-and-pop store | *"$49 a month. We never take a cut of your sales."* | Requires explaining a variable cost |
 | Predictability for the merchant | Fixed, budgetable | Scales with their best months |
 | Competitive position | Clean separation from marketplaces and from Shopify-class per-sale fees | Blends into the crowd |
 | Revenue | Flat per store | Scales with store success |
-| Implementation | `application_fee_amount` omitted | Fee logic, per-plan rates, reconciliation, refund proration |
+| Implementation | `application_fee_amount` omitted entirely | Fee logic, per-plan rates, reconciliation, refund proration |
 
-The market is small local retailers with thin margins and long memories for anything that feels like a tax on a good day. At $49 against ~$10 of infrastructure, a busy store is already profitable — taking a slice of their sales buys marginal revenue at the cost of the cleanest thing about the pitch.
+The market is small local retailers with thin margins and long memories for anything that feels like a tax on a good day. At $49 against ~$10 of infrastructure, a busy store is already profitable — taking a slice of their sales would buy marginal revenue at the cost of the cleanest thing about the pitch.
 
-**Keep the mechanism, set the value to zero.** `platform_fee_bps` stays in the schema so a future tier (or a high-volume plan) can use it without a migration. This costs nothing now and preserves the option.
+### What "say so loudly" means as a design constraint
 
-This is a business call, not an engineering one — it just needs to be made before Phase 8 wires the payment intent.
+Stating this publicly turns a config value into a **promise**, and promises constrain the codebase in ways a settings field does not:
+
+1. **It appears in the product, not just the pricing page.** The store application flow (`/apply`), the plan panel in store settings, and the platform marketing surface each state it plainly. A merchant should never have to go looking for whether there's a percentage.
+2. **Raising it later is a trust event, not a config change.** If BBA ever introduces a per-transaction fee, **every store existing at that moment is grandfathered at 0 bps permanently.** This is why the field stays per-store (`stores.platform_fee_bps`) rather than only per-plan — the schema must be able to express "this store is at zero forever" independently of what any future plan says. That capability costs nothing now and is the only thing that makes the promise keepable.
+3. **The mechanism stays, the value is zero.** `platform_fee_bps` remains on `plans` and `stores`. Phase 8 omits `application_fee_amount` from the PaymentIntent when the effective rate is 0 — it does not pass a zero, it passes nothing, so there is no fee line for a merchant to misread on a Stripe statement.
+4. **It is a testable invariant.** Phase 8 carries a test asserting no PaymentIntent is created with a non-zero application fee. If someone later enables fees, that test fails loudly and forces the grandfathering question to be answered deliberately rather than discovered in production.
+
+**Revenue model, stated completely:** BBA's income is the $49 subscription. Stripe's own processing fees are charged by Stripe to the store's connected account and never touch BBA. There is no other money flow.
 
 ## 18.7 Definition of done for the architecture
 

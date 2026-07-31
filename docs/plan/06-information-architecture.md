@@ -87,6 +87,7 @@ PLATFORM  (/platform/*) — SUPER_ADMIN only
 | Order detail | Track + act | `OrderTimeline`, `OrderItemsTable`, `ProofOfDeliveryViewer`, cancel/review buttons | — |
 | Settings pages | Self-service account | `AddressForm`, `SessionList`, `MfaSetup`, `NotificationPrefsMatrix` | — |
 | Auth pages | Enter the platform | `AuthCard`, Google button, `PasswordStrengthMeter` | — |
+| Store application (`/apply`) | Convert a local business | `PricingStatement` — **$49/month, 30-day free trial, no cut of your sales**, stated plainly and without an asterisk ([§18.6](18-final-recommendations.md#186-transaction-fee--zero-and-stated-publicly)); `ApplicationForm`; `WhatYouGetList` | Single column, pricing above the fold |
 
 ### Store ops surface
 

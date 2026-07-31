@@ -125,7 +125,9 @@ Known scaling order when growth demands it: (1) read replica for reporting, (2) 
 
 At ~$10/store/month in infrastructure against the **$49/store/month price** ([§18.5a](18-final-recommendations.md#185a-pricing--49storemonth)), gross margin reaches ~80% at 100 stores and ~88% at 500. Below roughly 50 stores the fixed floor dominates and the pilot runs near break-even — expected, and not a reason to reprice.
 
-Cost drivers to watch as stores grow are NAT data transfer and RDS storage IOPS, not compute. Stripe's own processing fees pass through to each store's connected account. Platform revenue is the subscription; whether BBA additionally takes a per-transaction application fee is still open — see [§18.6](18-final-recommendations.md#186-the-one-decision-still-open-transaction-fee).
+Cost drivers to watch as stores grow are NAT data transfer and RDS storage IOPS, not compute.
+
+**Revenue is the subscription, and only the subscription.** BBA takes no per-transaction fee ([§18.6](18-final-recommendations.md#186-transaction-fee--zero-and-stated-publicly)); Stripe's own processing fees are charged by Stripe directly to each store's connected account and never touch BBA. Margin therefore scales with store *count*, not store volume — a high-volume store costs marginally more to serve and pays the same $49, which is fine at these unit economics and is the tradeoff the no-fee promise buys.
 
 ## 14.8 Domains & TLS
 
