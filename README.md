@@ -1,14 +1,24 @@
 # BBA v2
 
-Enterprise-target rebuild of BBA per the architecture and planning document set at
-[`../BBA3/docs/plan/`](../BBA3/docs/plan/README.md) (the source of truth for every
-decision here — read it before making changes that contradict it, and record any
-deviation as an ADR).
+Multi-tenant SaaS eCommerce platform for small local businesses — *"Local Shops, Online
+Stores Near You."* Built per the architecture and planning document set in
+[`docs/plan/`](docs/plan/README.md), which is the source of truth for every decision
+here: read it before making changes that contradict it, and record any deviation as an ADR.
 
-**Scope:** retail commerce only for v2.0 launch (service-business threads, internal
-messaging, and accounting are deferred to v2.1 — see `docs/plan/17-future-enhancements.md`).
-No BBA3 store migration is needed (no live stores yet) — this is a fresh build, seeded
-with fixtures, not an ETL target.
+## Product decisions (settled)
+
+| | |
+|---|---|
+| **Scope** | Retail commerce only for v2.0. Service-business threads, internal messaging, and accounting deferred to v2.1 ([§17](docs/plan/17-future-enhancements.md)) |
+| **Pricing** | $49 per store per month, 30-day free trial. Single plan — no tiers in v2.0 ([§18.5a](docs/plan/18-final-recommendations.md)) |
+| **Launch market** | Illinois, concentrated on Chicago and its suburbs. Lower 48 eventually — tax sits behind a `TaxProvider` interface so expansion is a swap, not a migration ([§18.5b](docs/plan/18-final-recommendations.md)) |
+| **Store onboarding** | SuperAdmin-operated AI opening agent, in-app ([§19](docs/plan/19-ai-onboarding-agent.md)) |
+| **Migration** | None needed — no live stores on the predecessor. Fresh build with seeded fixtures |
+| **Still open** | Whether to take a per-transaction fee on top of the subscription ([§18.6](docs/plan/18-final-recommendations.md)) — must be decided before Phase 8 |
+
+A predecessor Firebase MVP (BBA3) exists locally and is not part of this repository. It
+implemented and validated every workflow described in the plan, and is the reason these
+requirements are specific rather than speculative ([§18.2](docs/plan/18-final-recommendations.md)).
 
 ## Status
 
@@ -53,14 +63,16 @@ Run just the tenant-isolation gate (this must always pass — it's the release g
 cd apps/api && npm run test:isolation
 ```
 
-## Why no Docker
+## Why Homebrew services instead of Docker
 
-This machine doesn't have Docker installed, and installing Docker Desktop needs a GUI
-install + password that shouldn't happen without you present. Homebrew Postgres/Redis
-are a fine substitute for solo local dev. A `docker-compose.yml` (matching
-`docs/plan/07-system-architecture.md`) should be added before onboarding a second
-developer or wiring CI, since CI will want ephemeral, disposable service containers
-rather than a shared local install.
+The plan ([§14.2](docs/plan/14-deployment-architecture.md)) calls for docker-compose in
+local dev. This repo currently uses Homebrew Postgres and Redis instead, because Docker
+wasn't installed on the machine this was scaffolded on and Docker Desktop needs an
+interactive install.
+
+**This is a known gap, not a decision.** Add a `docker-compose.yml` matching
+§7.1 before onboarding a second developer or wiring CI — CI needs ephemeral, disposable
+service containers, not a shared local install.
 
 ## Next steps (in order)
 
