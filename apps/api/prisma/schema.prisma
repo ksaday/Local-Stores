@@ -317,3 +317,50 @@ model AuditLog {
   @@index([severity, createdAt])
   @@map("audit_logs")
 }
+
+enum MediaKind {
+  PRODUCT
+  BRANDING
+  PROOF
+  SIGNATURE
+  EXPORT
+}
+
+enum MediaStatus {
+  PENDING
+  READY
+  REJECTED
+}
+
+/// Uploaded files. See plan §13.7 for the validation pipeline.
+///
+/// `storageKey` is always server-generated (a UUID path). The user's filename
+/// is kept only as metadata and never influences where bytes are written —
+/// that is the path-traversal defense.
+model MediaAsset {
+  id           String      @id @default(uuid())
+  storeId      String?     @map("store_id")
+  ownerUserId  String?     @map("owner_user_id")
+  kind         MediaKind
+  status       MediaStatus @default(PENDING)
+  storageKey   String      @unique @map("storage_key")
+  mime         String
+  bytes        Int
+  width        Int?
+  height       Int?
+  originalName String?     @map("original_name")
+
+  /// Why a file was rejected, so the owner gets a useful message rather than
+  /// a silent failure.
+  rejectReason String?     @map("reject_reason")
+
+  /// Distinguishes assets that must not be publicly served (delivery proofs,
+  /// signatures) from branding and product images that are CDN-cacheable.
+  isPrivate    Boolean     @default(false) @map("is_private")
+
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@index([storeId, kind, status])
+  @@map("media_assets")
+}

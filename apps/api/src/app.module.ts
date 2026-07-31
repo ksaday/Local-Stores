@@ -4,6 +4,7 @@ import { APP_GUARD } from "@nestjs/core";
 import { validateEnv } from "./config/env.js";
 import { PrismaModule } from "./infra/prisma/prisma.module.js";
 import { MailerModule } from "./infra/mailer/mailer.module.js";
+import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
@@ -23,6 +24,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     }),
     PrismaModule,
     MailerModule,
+    MediaModule,
     AuditModule,
     AuthModule,
     StoresModule,
