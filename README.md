@@ -1,7 +1,10 @@
-# BBA v2
+# Local Stores
 
-Multi-tenant SaaS eCommerce platform for small local businesses — *"Local Shops, Online
-Stores Near You."* Built per the architecture and planning document set in
+*"Local Shops, Online Stores Near You."*
+
+Multi-tenant SaaS eCommerce platform for small local businesses. Internally the platform
+is referred to as **BBA (Business Bridge App)** throughout the planning documents; this
+repository is v2, the production rebuild. Built per the architecture and planning document set in
 [`docs/plan/`](docs/plan/README.md), which is the source of truth for every decision
 here: read it before making changes that contradict it, and record any deviation as an ADR.
 
