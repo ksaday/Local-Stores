@@ -1,0 +1,165 @@
+// Phase 3 starting schema: identity, memberships, tenancy root.
+// See docs/plan/08-database-schema.md §8.2 for the full target catalog —
+// catalog/inventory/orders/payments/delivery tables land in later phases.
+//
+// RLS policies are NOT expressed here (Prisma doesn't model them) — they are
+// added as raw SQL in a companion migration per table, per §8.6, and are
+// what the Phase 3 cross-tenant isolation suite actually tests.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [citext]
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  CLOSED
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+}
+
+enum MembershipRole {
+  STORE_ADMIN
+  INVENTORY_MANAGER
+  CLERK
+  DELIVERY
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum PermissionEffect {
+  GRANT
+  DENY
+}
+
+enum StoreStatus {
+  APPROVED
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum BusinessType {
+  RETAIL
+  RESTAURANT
+  SERVICE
+}
+
+model User {
+  id                String        @id @default(uuid())
+  email             String        @unique @db.Citext
+  passwordHash      String?       @map("password_hash")
+  name              String
+  phone             String?
+  platformRole      PlatformRole? @map("platform_role")
+  status            UserStatus    @default(ACTIVE)
+  emailVerifiedAt   DateTime?     @map("email_verified_at")
+  mfaTotpSecret     String?       @map("mfa_totp_secret")
+  lastLoginAt       DateTime?     @map("last_login_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  deletedAt         DateTime?     @map("deleted_at")
+
+  memberships       StoreMembership[]
+  ownedStores       Store[]           @relation("StoreOwner")
+  refreshTokens     RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  familyId   String    @map("family_id")
+  tokenHash  String    @map("token_hash")
+  expiresAt  DateTime  @map("expires_at")
+  rotatedAt  DateTime? @map("rotated_at")
+  revokedAt  DateTime? @map("revoked_at")
+  ip         String?
+  userAgent  String?   @map("user_agent")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model Store {
+  id                   String       @id @default(uuid())
+  slug                 String       @unique @db.Citext
+  name                 String
+  legalName            String?      @map("legal_name")
+  businessType         BusinessType @map("business_type")
+  status               StoreStatus  @default(APPROVED)
+  ownerUserId          String       @map("owner_user_id")
+  addressLine1         String?      @map("address_line1")
+  city                 String?
+  state                String?
+  postalCode           String?      @map("postal_code")
+  country              String?
+  timezone             String       @default("America/New_York")
+  currency             String       @default("USD") @db.Char(3)
+  branding             Json         @default("{}")
+  stripeAccountId      String?      @unique @map("stripe_account_id")
+  stripeChargesEnabled Boolean      @default(false) @map("stripe_charges_enabled")
+  cashEnabled          Boolean      @default(true) @map("cash_enabled")
+  platformFeeBps       Int?         @map("platform_fee_bps")
+  approvedAt           DateTime?    @map("approved_at")
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+  deletedAt            DateTime?    @map("deleted_at")
+
+  owner       User               @relation("StoreOwner", fields: [ownerUserId], references: [id])
+  memberships StoreMembership[]
+
+  @@map("stores")
+}
+
+model StoreMembership {
+  id         String           @id @default(uuid())
+  storeId    String           @map("store_id")
+  userId     String           @map("user_id")
+  role       MembershipRole
+  status     MembershipStatus @default(INVITED)
+  invitedBy  String?          @map("invited_by")
+  acceptedAt DateTime?        @map("accepted_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+
+  store     Store                       @relation(fields: [storeId], references: [id])
+  user      User                        @relation(fields: [userId], references: [id])
+  overrides MemberPermissionOverride[]
+
+  @@unique([storeId, userId])
+  @@index([userId, status])
+  @@map("store_memberships")
+}
+
+model MemberPermissionOverride {
+  id             String           @id @default(uuid())
+  membershipId   String           @map("membership_id")
+  permissionCode String           @map("permission_code")
+  effect         PermissionEffect
+  grantedBy      String?          @map("granted_by")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  membership StoreMembership @relation(fields: [membershipId], references: [id])
+
+  @@unique([membershipId, permissionCode])
+  @@map("member_permission_overrides")
+}
