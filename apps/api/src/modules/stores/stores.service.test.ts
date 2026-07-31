@@ -99,6 +99,7 @@ async function cleanup(): Promise<void> {
       )`;
     await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id IN (SELECT id FROM stores WHERE slug = ${SLUG}::citext)`;
     await admin.$executeRaw`DELETE FROM store_hours WHERE store_id IN (SELECT id FROM stores WHERE slug = ${SLUG}::citext)`;
+    await admin.$executeRaw`DELETE FROM delivery_zones WHERE store_id IN (SELECT id FROM stores WHERE slug = ${SLUG}::citext)`;
     await admin.$executeRaw`DELETE FROM tax_rates WHERE store_id IN (SELECT id FROM stores WHERE slug = ${SLUG}::citext)`;
     await admin.$executeRaw`UPDATE store_applications SET store_id = NULL WHERE applicant_email = ${APPLICANT_EMAIL}::citext`;
     await admin.$executeRaw`DELETE FROM stores WHERE slug = ${SLUG}::citext`;
@@ -393,5 +394,127 @@ describe("staff management guardrails", () => {
     await expect(auth.refresh(session.refreshToken, { ip: "127.0.0.1" })).rejects.toBeInstanceOf(
       AppError,
     );
+  });
+});
+
+describe("delivery zones", () => {
+  let storeId: string;
+
+  // Chicago Loop, roughly.
+  const LOOP = { lat: 41.8827, lng: -87.6233 };
+
+  beforeEach(async () => {
+    const { id } = await submitApplication();
+    ({ storeId } = await applications.approve(id, REVIEWER, { slug: SLUG }));
+    await stores.transition(storeId, "ACTIVE", REVIEWER);
+  });
+
+  it("reports an address inside the radius as serviceable", async () => {
+    await stores.createZone(storeId, {
+      name: "Near", centerLat: LOOP.lat, centerLng: LOOP.lng,
+      radiusMeters: 5000, feeCents: 499, minOrderCents: 1500, etaMinutes: 30,
+    });
+
+    // ~1.1 km north.
+    const result = await stores.checkServiceability(storeId, LOOP.lat + 0.01, LOOP.lng);
+    expect(result.serviceable).toBe(true);
+    expect(result.zone?.feeCents).toBe(499);
+    expect(result.distanceMeters).toBeGreaterThan(900);
+    expect(result.distanceMeters).toBeLessThan(1300);
+  });
+
+  it("reports an address outside every radius as not serviceable", async () => {
+    await stores.createZone(storeId, {
+      name: "Near", centerLat: LOOP.lat, centerLng: LOOP.lng,
+      radiusMeters: 2000, feeCents: 499, minOrderCents: 0, etaMinutes: 30,
+    });
+
+    // ~11 km north — well outside.
+    const result = await stores.checkServiceability(storeId, LOOP.lat + 0.1, LOOP.lng);
+    expect(result.serviceable).toBe(false);
+    expect(result.zone).toBeUndefined();
+  });
+
+  it("picks the cheapest zone when several overlap", async () => {
+    // A store drawing a small cheap zone inside a large expensive one means
+    // the inner one to win — the customer should get the better price.
+    await stores.createZone(storeId, {
+      name: "Wide", centerLat: LOOP.lat, centerLng: LOOP.lng,
+      radiusMeters: 20000, feeCents: 999, minOrderCents: 0, etaMinutes: 60,
+    });
+    await stores.createZone(storeId, {
+      name: "Close", centerLat: LOOP.lat, centerLng: LOOP.lng,
+      radiusMeters: 3000, feeCents: 299, minOrderCents: 0, etaMinutes: 20,
+    });
+
+    const result = await stores.checkServiceability(storeId, LOOP.lat + 0.005, LOOP.lng);
+    expect(result.zone?.name).toBe("Close");
+    expect(result.zone?.feeCents).toBe(299);
+  });
+
+  it("rejects a radius large enough to be a units mistake", async () => {
+    // 50 miles entered as metres would silently promise deliveries the store
+    // cannot make.
+    await expect(
+      stores.createZone(storeId, {
+        name: "Oops", centerLat: LOOP.lat, centerLng: LOOP.lng,
+        radiusMeters: 500_000, feeCents: 499, minOrderCents: 0, etaMinutes: 30,
+      }),
+    ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("treats a zone from another store as not found on delete", async () => {
+    await expect(stores.deleteZone(storeId, randomUUID())).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("branding contrast validation", () => {
+  let storeId: string;
+
+  beforeEach(async () => {
+    const { id } = await submitApplication();
+    ({ storeId } = await applications.approve(id, REVIEWER, { slug: SLUG }));
+  });
+
+  it("accepts a theme that meets AA", async () => {
+    await expect(
+      stores.updateProfile(storeId, {
+        branding: {
+          theme: { primary: "#1a3d5c", background: "#ffffff", text: "#1a1a1a", accent: "#8a4b08" },
+        },
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects light grey body text on white and says by how much", async () => {
+    // Rejected at save time rather than warned about: once a storefront is
+    // live, nobody goes back to fix a dismissed warning.
+    const err = await expectRejection(
+      stores.updateProfile(storeId, {
+        branding: {
+          theme: { primary: "#1a3d5c", background: "#ffffff", text: "#cccccc", accent: "#8a4b08" },
+        },
+      }),
+    );
+
+    expect(err.status).toBe(422);
+    expect(err.fieldErrors?.[0]?.code).toBe("LOW_CONTRAST");
+    expect(err.fieldErrors?.[0]?.message).toMatch(/needs at least/);
+  });
+
+  it("rejects an unparseable colour rather than treating it as black", async () => {
+    const err = await expectRejection(
+      stores.updateProfile(storeId, {
+        branding: {
+          theme: { primary: "rebeccapurple", background: "#ffffff", text: "#000000", accent: "#8a4b08" },
+        },
+      }),
+    );
+    expect(err.fieldErrors?.[0]?.code).toBe("INVALID_COLOR");
+  });
+
+  it("leaves non-branding profile updates unaffected", async () => {
+    const updated = await stores.updateProfile(storeId, { name: "Renamed Bakery" });
+    expect(updated.name).toBe("Renamed Bakery");
   });
 });

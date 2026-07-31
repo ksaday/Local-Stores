@@ -1,5 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { assertStoreTransition, InvalidStoreTransitionError, type StoreStatus } from "@bba/shared";
+import {
+  assertStoreTransition,
+  checkBrandingContrast,
+  InvalidStoreTransitionError,
+  type BrandingTheme,
+  type StoreStatus,
+} from "@bba/shared";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
@@ -42,6 +48,42 @@ export class StoreService {
 
   async updateProfile(storeId: string, patch: StoreProfileUpdate) {
     const before = await this.get(storeId);
+
+    // Branding is validated for contrast at save time (NFR-A11Y-03) rather
+    // than warned about afterwards. A theme that fails AA is rejected: once a
+    // storefront is live, unreadable body text is the owner's customers'
+    // problem, and nobody goes back to fix a dismissed warning.
+    if (patch.branding?.theme) {
+      const result = checkBrandingContrast(patch.branding.theme as BrandingTheme);
+
+      if (result.invalidColors.length > 0) {
+        throw AppError.validation(
+          "Some brand colours aren't valid hex values.",
+          result.invalidColors.map((name) => ({
+            field: `branding.theme.${name}`,
+            code: "INVALID_COLOR",
+            message: "Use a hex colour like #1a3d5c.",
+          })),
+        );
+      }
+
+      if (!result.passes) {
+        const failed = result.checks.filter((c) => !c.passes);
+        throw new AppError(
+          "VALIDATION_FAILED",
+          422,
+          "Insufficient colour contrast",
+          "These colour combinations are too low-contrast to read.",
+          failed.map((c) => ({
+            field: "branding.theme",
+            code: "LOW_CONTRAST",
+            // Say what failed and by how much — "inaccessible" is not actionable.
+            message: `${c.pair} is ${c.ratio}:1, needs at least ${c.required}:1.`,
+          })),
+          { checks: result.checks },
+        );
+      }
+    }
 
     const updated = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
       tx.store.update({
@@ -205,6 +247,114 @@ export class StoreService {
     return this.getHours(storeId);
   }
 
+
+  // ── Delivery zones (FR-STORE-04) ─────────────────────────────────────────
+
+  async getZones(storeId: string) {
+    return this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.deliveryZone.findMany({ where: { storeId }, orderBy: { radiusMeters: "asc" } }),
+    );
+  }
+
+  async createZone(
+    storeId: string,
+    input: {
+      name: string;
+      centerLat: number;
+      centerLng: number;
+      radiusMeters: number;
+      feeCents: number;
+      minOrderCents: number;
+      etaMinutes: number;
+    },
+  ) {
+    if (input.centerLat < -90 || input.centerLat > 90) {
+      throw AppError.validation("Latitude must be between -90 and 90.");
+    }
+    if (input.centerLng < -180 || input.centerLng > 180) {
+      throw AppError.validation("Longitude must be between -180 and 180.");
+    }
+    // 100km is far past any plausible local delivery. A zone larger than that
+    // is almost certainly a units mistake (miles entered as metres), and
+    // accepting it would quietly promise deliveries the store cannot make.
+    if (input.radiusMeters < 100 || input.radiusMeters > 100_000) {
+      throw AppError.validation("A delivery radius must be between 100 m and 100 km.");
+    }
+
+    const created = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.deliveryZone.create({ data: { storeId, ...input, name: input.name.trim() } }),
+    );
+
+    await this.audit.record({
+      action: "store.delivery_zone_created",
+      entityType: "delivery_zone",
+      entityId: created.id,
+      severity: "MEDIUM",
+      storeId,
+      after: { name: created.name, radiusMeters: created.radiusMeters, feeCents: created.feeCents },
+    });
+
+    return created;
+  }
+
+  async deleteZone(storeId: string, zoneId: string): Promise<void> {
+    const { count } = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.deliveryZone.deleteMany({ where: { id: zoneId, storeId } }),
+    );
+    if (count === 0) throw AppError.notFound();
+
+    await this.audit.record({
+      action: "store.delivery_zone_deleted",
+      entityType: "delivery_zone",
+      entityId: zoneId,
+      severity: "MEDIUM",
+      storeId,
+    });
+  }
+
+  /**
+   * Can this store deliver to a point, and at what price?
+   *
+   * Returns the cheapest matching zone rather than the first or nearest: when
+   * zones overlap, the customer should get the better deal. A store that draws
+   * a small cheap zone inside a large expensive one means the inner one to win.
+   */
+  async checkServiceability(
+    storeId: string,
+    lat: number,
+    lng: number,
+  ): Promise<{ serviceable: boolean; zone?: { id: string; name: string; feeCents: number; minOrderCents: number; etaMinutes: number }; distanceMeters: number | null }> {
+    const zones = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.deliveryZone.findMany({ where: { storeId, active: true } }),
+    );
+
+    let best: (typeof zones)[number] | undefined;
+    let bestDistance: number | null = null;
+
+    for (const zone of zones) {
+      const distance = haversineMeters(lat, lng, zone.centerLat, zone.centerLng);
+      if (distance > zone.radiusMeters) continue;
+      if (!best || zone.feeCents < best.feeCents) {
+        best = zone;
+        bestDistance = distance;
+      }
+    }
+
+    if (!best) return { serviceable: false, distanceMeters: null };
+
+    return {
+      serviceable: true,
+      zone: {
+        id: best.id,
+        name: best.name,
+        feeCents: best.feeCents,
+        minOrderCents: best.minOrderCents,
+        etaMinutes: best.etaMinutes,
+      },
+      distanceMeters: bestDistance,
+    };
+  }
+
   // ── Tax rates ────────────────────────────────────────────────────────────
 
   async getTaxRates(storeId: string) {
@@ -252,4 +402,20 @@ function allowedFrom(status: StoreStatus): readonly StoreStatus[] {
     SUSPENDED: ["ACTIVE", "CLOSED"],
     CLOSED: [],
   }[status] as readonly StoreStatus[];
+}
+
+/**
+ * Great-circle distance in metres. Delivery zones are a few kilometres across,
+ * where the earth is close enough to spherical that this is accurate to well
+ * under a metre — far tighter than a street address is anyway.
+ */
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
 }

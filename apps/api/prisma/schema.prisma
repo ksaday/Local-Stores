@@ -145,8 +145,9 @@ model Store {
 
   owner       User               @relation("StoreOwner", fields: [ownerUserId], references: [id])
   memberships StoreMembership[]
-  hours       StoreHours[]
-  taxRates    TaxRate[]
+  hours         StoreHours[]
+  taxRates      TaxRate[]
+  deliveryZones DeliveryZone[]
 
   @@map("stores")
 }
@@ -363,4 +364,26 @@ model MediaAsset {
 
   @@index([storeId, kind, status])
   @@map("media_assets")
+}
+
+/// Delivery zones (FR-STORE-04). Radius-based only for the Illinois launch —
+/// polygons are the advanced option and are not needed for a metro rollout.
+model DeliveryZone {
+  id            String   @id @default(uuid())
+  storeId       String   @map("store_id")
+  name          String
+  centerLat     Float    @map("center_lat")
+  centerLng     Float    @map("center_lng")
+  radiusMeters  Int      @map("radius_meters")
+  feeCents      Int      @map("fee_cents")
+  minOrderCents Int      @default(0) @map("min_order_cents")
+  etaMinutes    Int      @map("eta_minutes")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, active])
+  @@map("delivery_zones")
 }

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query, Req } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req } from "@nestjs/common";
 import { z } from "zod";
 import { MEMBERSHIP_ROLES, PERMISSIONS, STORE_STATUSES } from "@bba/shared";
 import { Public } from "../../common/decorators/public.decorator.js";
@@ -69,6 +69,18 @@ const TaxRateSchema = z
     name: z.string().min(1).max(80),
     rateBps: z.number().int().min(0).max(10000),
     isDefault: z.boolean().default(false),
+  })
+  .strict();
+
+const ZoneSchema = z
+  .object({
+    name: z.string().min(1).max(80),
+    centerLat: z.number().min(-90).max(90),
+    centerLng: z.number().min(-180).max(180),
+    radiusMeters: z.number().int().min(100).max(100_000),
+    feeCents: z.number().int().min(0).max(100_000),
+    minOrderCents: z.number().int().min(0).max(1_000_000).default(0),
+    etaMinutes: z.number().int().min(1).max(600),
   })
   .strict();
 
@@ -209,6 +221,48 @@ export class StoreSettingsController {
     @Body(zodBody(TaxRateSchema)) body: z.infer<typeof TaxRateSchema>,
   ) {
     return this.stores.createTaxRate(storeId, body);
+  }
+
+  @Get("delivery-zones")
+  @RequirePermission("store:read")
+  async getZones(@Param("storeId") storeId: string) {
+    return this.stores.getZones(storeId);
+  }
+
+  @Post("delivery-zones")
+  @RequirePermission("store:settings")
+  @HttpCode(201)
+  async createZone(
+    @Param("storeId") storeId: string,
+    @Body(zodBody(ZoneSchema)) body: z.infer<typeof ZoneSchema>,
+  ) {
+    return this.stores.createZone(storeId, body);
+  }
+
+  @Delete("delivery-zones/:zoneId")
+  @RequirePermission("store:settings")
+  @HttpCode(204)
+  async deleteZone(@Param("storeId") storeId: string, @Param("zoneId") zoneId: string) {
+    await this.stores.deleteZone(storeId, zoneId);
+  }
+
+  /**
+   * Public: a shopper needs to know whether their address is deliverable
+   * before they have an account, and zones are information a store advertises.
+   */
+  @Public()
+  @Get("delivery-check")
+  async checkDelivery(
+    @Param("storeId") storeId: string,
+    @Query("lat") lat: string,
+    @Query("lng") lng: string,
+  ) {
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
+      throw AppError.validation("Provide a valid lat and lng.");
+    }
+    return this.stores.checkServiceability(storeId, parsedLat, parsedLng);
   }
 
   @Get("members")
