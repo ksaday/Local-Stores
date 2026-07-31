@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
 import { validateEnv } from "./config/env.js";
 import { PrismaModule } from "./infra/prisma/prisma.module.js";
+import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
@@ -19,6 +20,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
       validate: validateEnv,
     }),
     PrismaModule,
+    MailerModule,
     AuthModule,
     HealthModule,
   ],

@@ -13,6 +13,7 @@ import { PermissionsGuard } from "./permissions.guard.js";
 import { StoreScopeGuard } from "./store-scope.guard.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { PrismaModule } from "../../infra/prisma/prisma.module.js";
+import { MailerModule } from "../../infra/mailer/mailer.module.js";
 import { AuthModule } from "../../modules/auth/auth.module.js";
 import { TokenService } from "../../modules/auth/token.service.js";
 import { validateEnv } from "../../config/env.js";
@@ -81,6 +82,7 @@ const TEST_ENV = validateEnv({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => TEST_ENV] }),
     PrismaModule,
+    MailerModule,
     AuthModule,
   ],
   controllers: [GuardTestController],

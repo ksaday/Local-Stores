@@ -32,15 +32,31 @@ export class JwtAuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) return true;
 
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const token = extractToken(req);
-    if (!token) throw AppError.unauthenticated();
 
-    const claims = await this.tokens.verifyAccessToken(token);
+    if (!token) {
+      if (isPublic) return true;
+      throw AppError.unauthenticated();
+    }
+
+    // A public route still attaches identity when a valid token is present.
+    // Some public endpoints behave differently for a signed-in caller —
+    // accepting an invitation attaches the membership to the existing account
+    // rather than creating a duplicate — and without this they would never see
+    // the session the browser is already sending.
+    let claims;
+    try {
+      claims = await this.tokens.verifyAccessToken(token);
+    } catch (err) {
+      // On a public route an expired or malformed token is simply ignored:
+      // a stale cookie should not lock someone out of a page open to everyone.
+      if (isPublic) return true;
+      throw err;
+    }
+
     req.auth = claims;
-
     setContextIdentity({
       userId: claims.sub,
       isSuperAdmin: claims.platformRole === "SUPER_ADMIN",
