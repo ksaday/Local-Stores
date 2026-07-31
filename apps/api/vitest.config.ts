@@ -15,8 +15,8 @@ export default defineConfig({
     },
   },
   test: {
+    name: "@bba/api",
     globals: false,
-    root: "./",
     include: ["src/**/*.test.ts"],
     // Prisma + a real Postgres: keep DB-touching suites off each other's toes.
     pool: "forks",

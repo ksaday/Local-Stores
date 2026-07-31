@@ -24,10 +24,19 @@ export class PermissionResolver {
   constructor(private readonly prisma: PrismaService) {}
 
   async effectiveFor(userId: string, storeId: string): Promise<ReadonlySet<Permission>> {
-    const membership = await this.prisma.unscoped().storeMembership.findUnique({
-      where: { storeId_userId: { storeId, userId } },
-      include: { overrides: true },
-    });
+    // Scoped, not unscoped: RLS on store_memberships requires the caller's
+    // identity in transaction context. Reading via unscoped() returns zero rows
+    // under the restricted app role, which would deny every permission on every
+    // store route — failing closed, but closed for legitimate staff too.
+    // Identity is known here because JwtAuthGuard has already run.
+    const membership = await this.prisma.withTenant(
+      { userId, storeId, isSuperAdmin: false },
+      (tx) =>
+        tx.storeMembership.findUnique({
+          where: { storeId_userId: { storeId, userId } },
+          include: { overrides: true },
+        }),
+    );
 
     // No membership, or a suspended/still-invited one, grants nothing.
     if (!membership || membership.status !== "ACTIVE") {
