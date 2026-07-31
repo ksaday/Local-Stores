@@ -41,13 +41,41 @@ export const PERMISSIONS = [
   "reviews:read",
   "reviews:reply",
   "reviews:report",
+
+  // Platform permissions (§4.2). These are NOT store-scoped: they are held by
+  // platform staff and checked against the user's platformRole, never against
+  // a membership. Keeping them in the same catalog means a route declares its
+  // requirement the same way regardless of which surface it belongs to.
+  "platform:stores",
+  "platform:users",
+  "platform:billing",
+  "platform:audit",
+  "platform:announce",
+  "platform:config",
+  "platform:impersonate",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
+/**
+ * Permissions that are satisfied by platform staff status rather than by a
+ * store membership. A route declaring one of these is a platform route, and
+ * requiring a store context for it would be nonsense.
+ */
+export function isPlatformPermission(permission: Permission): boolean {
+  return permission.startsWith("platform:");
+}
+
 /** Default permission bundle granted to each store-scoped role (§4.3). */
+export const STORE_PERMISSIONS = PERMISSIONS.filter(
+  (p) => !isPlatformPermission(p),
+) as readonly Permission[];
+
 export const ROLE_DEFAULT_PERMISSIONS: Record<MembershipRole, readonly Permission[]> = {
-  STORE_ADMIN: PERMISSIONS, // full store-scoped surface
+  // Every store-scoped permission — but explicitly NOT the platform ones.
+  // Using PERMISSIONS directly here would have handed every store owner
+  // platform:stores, which is the whole platform.
+  STORE_ADMIN: STORE_PERMISSIONS,
   INVENTORY_MANAGER: [
     "store:read",
     "catalog:read",

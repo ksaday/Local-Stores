@@ -4,8 +4,10 @@ import { APP_GUARD } from "@nestjs/core";
 import { validateEnv } from "./config/env.js";
 import { PrismaModule } from "./infra/prisma/prisma.module.js";
 import { MailerModule } from "./infra/mailer/mailer.module.js";
+import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
+import { StoresModule } from "./modules/stores/stores.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard.js";
 import { StoreScopeGuard } from "./common/guards/store-scope.guard.js";
@@ -21,7 +23,9 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     }),
     PrismaModule,
     MailerModule,
+    AuditModule,
     AuthModule,
+    StoresModule,
     HealthModule,
   ],
   providers: [

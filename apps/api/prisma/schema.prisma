@@ -145,6 +145,8 @@ model Store {
 
   owner       User               @relation("StoreOwner", fields: [ownerUserId], references: [id])
   memberships StoreMembership[]
+  hours       StoreHours[]
+  taxRates    TaxRate[]
 
   @@map("stores")
 }
@@ -212,4 +214,106 @@ model VerificationToken {
   @@index([userId, type])
   @@index([email, type])
   @@map("verification_tokens")
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AuditSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// Public applications from businesses wanting a store (plan §5.7).
+///
+/// Deliberately separate from `stores`: an application is a request from a
+/// person we know nothing about yet, and most fields are unverified claims.
+/// A store row only exists once a human has approved one.
+model StoreApplication {
+  id            String            @id @default(uuid())
+  applicantName String            @map("applicant_name")
+  applicantEmail String           @map("applicant_email") @db.Citext
+  applicantPhone String?          @map("applicant_phone")
+  businessName  String            @map("business_name")
+  businessType  BusinessType      @map("business_type")
+  addressLine1  String?           @map("address_line1")
+  city          String?
+  state         String?
+  postalCode    String?           @map("postal_code")
+  pitch         String?
+  status        ApplicationStatus @default(PENDING)
+  reviewedBy    String?           @map("reviewed_by")
+  reviewedAt    DateTime?         @map("reviewed_at")
+  reviewNote    String?           @map("review_note")
+
+  /// Set on approval. Also the idempotency guard: a retried approval finds the
+  /// store already linked rather than provisioning a second one.
+  storeId       String?           @unique @map("store_id")
+
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("store_applications")
+}
+
+model StoreHours {
+  id       String   @id @default(uuid())
+  storeId  String   @map("store_id")
+  weekday  Int
+  opens    String?
+  closes   String?
+  isClosed Boolean  @default(false) @map("is_closed")
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, weekday])
+  @@map("store_hours")
+}
+
+model TaxRate {
+  id        String   @id @default(uuid())
+  storeId   String   @map("store_id")
+  name      String
+  rateBps   Int      @map("rate_bps")
+  isDefault Boolean  @default(false) @map("is_default")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, active])
+  @@map("tax_rates")
+}
+
+/// Append-only record of sensitive actions (plan §13.8).
+///
+/// Written by an interceptor rather than by hand at each call site, so coverage
+/// does not depend on remembering. UPDATE and DELETE are revoked from the
+/// application role at the grant level — this table is evidence, and evidence
+/// the application can rewrite is not evidence.
+model AuditLog {
+  id          String        @id @default(uuid())
+  actorUserId String?       @map("actor_user_id")
+  storeId     String?       @map("store_id")
+  severity    AuditSeverity @default(MEDIUM)
+  action      String
+  entityType  String        @map("entity_type")
+  entityId    String?       @map("entity_id")
+  before      Json?
+  after       Json?
+  ip          String?
+  userAgent   String?       @map("user_agent")
+  requestId   String?       @map("request_id")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@index([storeId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@index([severity, createdAt])
+  @@map("audit_logs")
 }

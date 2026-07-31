@@ -32,6 +32,16 @@ const ALLOWED = new Set([
   "src/infra/prisma/prisma.service.ts",
   // This test names it.
   "src/infra/prisma/unscoped-usage.test.ts",
+  // Audit writes are unconditional by design: an entry must be recorded even
+  // when the action was rejected and even when the actor's context is partial.
+  // A scoped write could be blocked, which would let someone suppress their own
+  // trail. The INSERT policy is WITH CHECK (true) for the same reason, and
+  // UPDATE/DELETE are revoked outright so this cannot become a write-anywhere.
+  "src/modules/audit/audit.service.ts",
+  // Public store-application intake: applying is unauthenticated by definition,
+  // so there is no identity to scope to. The insert goes through a narrow
+  // SECURITY DEFINER function; every read path here is platform-scoped.
+  "src/modules/stores/store-application.service.ts",
 ]);
 
 /**

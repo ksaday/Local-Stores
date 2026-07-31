@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import type { Permission } from "@bba/shared";
+import { isPlatformPermission, type Permission } from "@bba/shared";
 import { AppError } from "../errors/app-error.js";
 import { IS_PUBLIC_KEY } from "../decorators/public.decorator.js";
 import { REQUIRED_PERMISSIONS_KEY } from "../decorators/require-permission.decorator.js";
@@ -42,6 +42,22 @@ export class PermissionsGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
     if (!req.auth) throw AppError.unauthenticated();
 
+    // Platform permissions are satisfied by platform staff status, never by a
+    // store membership — a store owner holds every store-scoped permission but
+    // must never hold platform:stores. Checked before the store-context rule
+    // below, because a platform route legitimately has no store to scope to.
+    const platformRequired = required.filter(isPlatformPermission);
+    if (platformRequired.length > 0) {
+      if (req.auth.platformRole !== "SUPER_ADMIN") {
+        // 404 rather than 403: the platform surface should not confirm its own
+        // routes exist to a caller with no business there.
+        throw AppError.notFound();
+      }
+      // A route mixing platform and store permissions is a design error, not a
+      // runtime condition — treat platform authority as sufficient.
+      return true;
+    }
+
     const storeId = (req.params as Record<string, string | undefined>)?.storeId;
 
     // A route declaring a store-scoped permission but exposing no :storeId has
@@ -51,9 +67,8 @@ export class PermissionsGuard implements CanActivate {
       throw AppError.forbidden("This action requires a store context.");
     }
 
-    // Platform staff bypass store-scoped permission checks; their own
-    // platform:* requirements are checked separately and every action is
-    // audited (plan §4.5b).
+    // Platform staff may traverse any store's operational surface for support;
+    // every such action is audited (plan §4.5b).
     if (req.auth.platformRole === "SUPER_ADMIN") return true;
 
     const effective = await this.permissions.effectiveFor(req.auth.sub, storeId);
