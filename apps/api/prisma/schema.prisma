@@ -152,6 +152,8 @@ model Store {
   hours         StoreHours[]
   taxRates      TaxRate[]
   deliveryZones DeliveryZone[]
+  categories    Category[]
+  products      Product[]
 
   @@map("stores")
 }
@@ -423,4 +425,103 @@ model MfaRecoveryCode {
 
   @@index([userId, usedAt])
   @@map("mfa_recovery_codes")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+/// One level of subcategory is allowed; depth is capped by a trigger.
+/// Deeper trees are a merchandising rabbit hole for a corner shop, and every
+/// extra level multiplies the navigation the owner has to maintain.
+model Category {
+  id        String    @id @default(uuid())
+  storeId   String    @map("store_id")
+  parentId  String?   @map("parent_id")
+  name      String
+  slug      String
+  position  Int       @default(0)
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  store    Store      @relation(fields: [storeId], references: [id])
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@unique([storeId, slug])
+  @@index([storeId, active, position])
+  @@map("categories")
+}
+
+model Product {
+  id          String        @id @default(uuid())
+  storeId     String        @map("store_id")
+  categoryId  String?       @map("category_id")
+  name        String
+  slug        String
+  brand       String?
+  description String?
+  status      ProductStatus @default(DRAFT)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  deletedAt   DateTime?     @map("deleted_at")
+
+  store    Store            @relation(fields: [storeId], references: [id])
+  category Category?        @relation(fields: [categoryId], references: [id])
+  variants ProductVariant[]
+  images   ProductImage[]
+
+  @@unique([storeId, slug])
+  @@index([storeId, status, categoryId])
+  @@map("products")
+}
+
+/// The sellable unit. Every product has at least one — a product with no
+/// variant has no price and cannot be bought, so the default is created with
+/// the product rather than left to the owner to remember.
+model ProductVariant {
+  id             String    @id @default(uuid())
+  productId      String    @map("product_id")
+  /// Denormalised from the product so RLS and the per-store SKU uniqueness
+  /// constraint can both be expressed without a join.
+  storeId        String    @map("store_id")
+  sku            String?
+  barcode        String?
+  /// e.g. { "size": "Large", "colour": "Blue" }. Empty for a single-variant product.
+  attrs          Json      @default("{}")
+  priceCents     Int       @map("price_cents")
+  compareAtCents Int?      @map("compare_at_cents")
+  costCents      Int?      @map("cost_cents")
+  isDefault      Boolean   @default(false) @map("is_default")
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([storeId, barcode])
+  @@map("product_variants")
+}
+
+model ProductImage {
+  id           String   @id @default(uuid())
+  productId    String   @map("product_id")
+  storeId      String   @map("store_id")
+  mediaAssetId String   @map("media_asset_id")
+  alt          String?
+  position     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, position])
+  @@index([storeId])
+  @@map("product_images")
 }

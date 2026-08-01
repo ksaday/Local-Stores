@@ -7,6 +7,7 @@ import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
+import { CatalogModule } from "./modules/catalog/catalog.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { StoresModule } from "./modules/stores/stores.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
@@ -28,6 +29,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     AuditModule,
     AuthModule,
     StoresModule,
+    CatalogModule,
     HealthModule,
   ],
   providers: [
