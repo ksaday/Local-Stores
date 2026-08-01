@@ -9,3 +9,5 @@ dist/
 coverage/
 dist/
 .storage/
+.next/
+next-env.d.ts

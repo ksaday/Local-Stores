@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --surface: 255 255 255;
+    --surface-muted: 247 246 243;
+    --ink: 26 26 26;
+    --ink-muted: 100 100 100;
+    --line: 224 222 217;
+    --brand: 26 61 92;
+    --brand-ink: 255 255 255;
+    --danger: 176 42 42;
+    --success: 22 101 52;
+  }
+
+  /* Dark is opt-in per surface for now; storefronts set their own tokens. */
+  html { color-scheme: light; }
+
+  body {
+    @apply bg-surface text-ink antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* Visible focus everywhere — plan NFR-A11Y-02. Never remove this without a
+     replacement; keyboard users lose their place entirely. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand ring-offset-2 ring-offset-surface;
+  }
+}
