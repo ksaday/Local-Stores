@@ -6,6 +6,7 @@ import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { Env } from "../../config/env.js";
 import { AuthRepository } from "./auth.repository.js";
+import { MfaService } from "./mfa.service.js";
 import { PasswordService } from "./password.service.js";
 import { hashRefreshToken, TokenService, type MembershipClaim } from "./token.service.js";
 
@@ -14,6 +15,15 @@ export interface IssuedSession {
   refreshToken: string;
   expiresAt: Date;
 }
+
+/**
+ * Login either completes, or stops at the second factor. Making these distinct
+ * shapes means a caller cannot accidentally treat an unfinished login as a
+ * session — there is no session in the challenge branch to mistake for one.
+ */
+export type LoginOutcome =
+  | { kind: "session"; session: IssuedSession }
+  | { kind: "mfa_required"; challengeToken: string };
 
 interface DeviceInfo {
   ip?: string;
@@ -29,6 +39,7 @@ export class AuthService {
     private readonly repo: AuthRepository,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly mfa: MfaService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -76,7 +87,7 @@ export class AuthService {
   async login(
     input: { email: string; password: string },
     device: DeviceInfo,
-  ): Promise<IssuedSession> {
+  ): Promise<LoginOutcome> {
     const email = input.email.trim().toLowerCase();
     const user = await this.repo.findUserByEmail(email);
 
@@ -108,7 +119,41 @@ export class AuthService {
       }),
     );
 
-    return this.issueSession(user.id, randomUUID(), device);
+    // A correct password alone is not a session when MFA is on. The challenge
+    // token proves only that this step passed; it cannot read or write anything.
+    if (await this.mfa.isEnabled(user.id)) {
+      return { kind: "mfa_required", challengeToken: await this.tokens.issueMfaChallenge(user.id) };
+    }
+
+    return { kind: "session", session: await this.issueSession(user.id, randomUUID(), device) };
+  }
+
+  /** Second step of an MFA login: exchange a verified challenge for a session. */
+  async completeMfaLogin(
+    challengeToken: string,
+    code: string,
+    device: DeviceInfo,
+  ): Promise<IssuedSession> {
+    const userId = await this.tokens.verifyMfaChallenge(challengeToken);
+
+    const user = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.user.findUnique({ where: { id: userId }, select: { email: true, status: true } }),
+    );
+    if (!user || user.status !== "ACTIVE") throw AppError.unauthenticated();
+
+    const ok = await this.mfa.verifyChallenge(userId, user.email, code);
+    if (!ok) throw AppError.unauthenticated("That code isn't right.");
+
+    return this.issueSession(userId, randomUUID(), device);
+  }
+
+  /**
+   * Issues a session directly, bypassing the password step. Used by OAuth,
+   * where the provider has already authenticated the user, and by invitation
+   * acceptance.
+   */
+  async issueSessionFor(userId: string, device: DeviceInfo): Promise<IssuedSession> {
+    return this.issueSession(userId, randomUUID(), device);
   }
 
   /**

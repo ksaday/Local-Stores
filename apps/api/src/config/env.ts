@@ -44,6 +44,15 @@ const envSchema = z.object({
 
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
 
+  /**
+   * Key material for encrypting TOTP secrets at rest. Any length — it is
+   * SHA-256 derived before use. In production this comes from Secrets Manager.
+   */
+  MFA_ENCRYPTION_KEY: z.string().min(16).default("dev-only-mfa-key-change-in-production"),
+
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+
   /** Disables the outbound k-anonymity breach check in offline/test environments. */
   PASSWORD_BREACH_CHECK: z
     .enum(["true", "false"])

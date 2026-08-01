@@ -9,6 +9,7 @@ import { AccountService } from "./account.service.js";
 import { AuthRepository } from "./auth.repository.js";
 import { AuthService } from "./auth.service.js";
 import { InvitationService } from "./invitation.service.js";
+import { MfaService } from "./mfa.service.js";
 import { PasswordService } from "./password.service.js";
 import { TokenService } from "./token.service.js";
 import { VerificationTokenService } from "./verification-token.service.js";
@@ -50,7 +51,8 @@ beforeAll(async () => {
   const verification = new VerificationTokenService(prisma);
   repo = new AuthRepository(prisma);
   mailer = new InMemoryMailer();
-  auth = new AuthService(prisma, repo, passwords, tokens, config as never);
+  const mfa = new MfaService(prisma, config as never);
+  auth = new AuthService(prisma, repo, passwords, tokens, mfa, config as never);
   account = new AccountService(
     prisma, repo, verification, passwords, auth, mailer, config as never,
   );
@@ -137,6 +139,22 @@ function tokenFromMail(to: string): string {
   return match[1]!;
 }
 
+/**
+ * Unwraps a login that is expected to complete without a second factor.
+ * Fails loudly if MFA intervened, rather than letting a test quietly assert
+ * against an unfinished login.
+ */
+async function loginSession(
+  auth: AuthService,
+  email: string,
+  password: string,
+  device: { ip?: string; userAgent?: string },
+) {
+  const outcome = await auth.login({ email, password }, device);
+  if (outcome.kind !== "session") throw new Error("Expected a session, got an MFA challenge.");
+  return outcome.session;
+}
+
 async function expectRejection(promise: Promise<unknown>): Promise<AppError> {
   try {
     await promise;
@@ -214,7 +232,7 @@ describe("password reset", () => {
   it("revokes every existing session on reset", async () => {
     // Someone resetting a password often believes the account is compromised;
     // leaving an attacker's session alive would defeat the point.
-    const before = await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
+    const before = await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
 
     await account.requestPasswordReset(USER_EMAIL);
     await account.resetPassword(tokenFromMail(USER_EMAIL), "a brand new passphrase here");
@@ -278,7 +296,7 @@ describe("change password", () => {
 
   it("changes the password and signs other devices out", async () => {
     const user = await repo.findUserByEmail(USER_EMAIL);
-    const session = await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
 
     await account.changePassword(user!.id, PASSWORD, "a brand new passphrase here");
 
@@ -297,8 +315,8 @@ describe("session listing and revocation", () => {
 
   it("lists one entry per device rather than per token", async () => {
     const user = await repo.findUserByEmail(USER_EMAIL);
-    const deviceA = await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
-    await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
+    const deviceA = await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
+    await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
 
     // Rotating deviceA adds a token row but must not add a session entry —
     // a user looking for an unfamiliar device needs devices, not tokens.
@@ -310,8 +328,8 @@ describe("session listing and revocation", () => {
 
   it("revokes a single session without touching the others", async () => {
     const user = await repo.findUserByEmail(USER_EMAIL);
-    const deviceA = await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
-    const deviceB = await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
+    const deviceA = await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
+    const deviceB = await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
 
     const sessions = await account.listSessions(user!.id);
     const familyOfA = sessions.find((s) => s.familyId);
@@ -331,7 +349,7 @@ describe("session listing and revocation", () => {
   it("will not let one user revoke another's session", async () => {
     // Knowing a familyId must not be enough to sign someone else out.
     const victim = await repo.findUserByEmail(USER_EMAIL);
-    await auth.login({ email: USER_EMAIL, password: PASSWORD }, DEVICE);
+    await loginSession(auth, USER_EMAIL, PASSWORD, DEVICE);
     const victimSessions = await account.listSessions(victim!.id);
 
     await expect(
@@ -379,7 +397,7 @@ describe("staff invitations", () => {
       token: tokenFromMail(INVITEE_EMAIL), name: "New Clerk", password: PASSWORD,
     });
 
-    const session = await auth.login({ email: INVITEE_EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(auth, INVITEE_EMAIL, PASSWORD, DEVICE);
     expect(session.accessToken).toBeTruthy();
   });
 
@@ -391,7 +409,7 @@ describe("staff invitations", () => {
       token: tokenFromMail(INVITEE_EMAIL), name: "New Clerk", password: PASSWORD,
     });
 
-    const session = await auth.login({ email: INVITEE_EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(auth, INVITEE_EMAIL, PASSWORD, DEVICE);
     const [, payload] = session.accessToken.split(".");
     const claims = JSON.parse(Buffer.from(payload!, "base64url").toString());
 

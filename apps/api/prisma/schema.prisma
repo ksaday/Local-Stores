@@ -73,7 +73,9 @@ model User {
   platformRole      PlatformRole? @map("platform_role")
   status            UserStatus    @default(ACTIVE)
   emailVerifiedAt   DateTime?     @map("email_verified_at")
+  /// AES-256-GCM ciphertext, never the raw secret (plan §13.1).
   mfaTotpSecret     String?       @map("mfa_totp_secret")
+  mfaEnabledAt      DateTime?     @map("mfa_enabled_at")
   lastLoginAt       DateTime?     @map("last_login_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
@@ -83,6 +85,8 @@ model User {
   ownedStores        Store[]             @relation("StoreOwner")
   refreshTokens      RefreshToken[]
   verificationTokens VerificationToken[]
+  authIdentities     AuthIdentity[]
+  mfaRecoveryCodes   MfaRecoveryCode[]
 
   @@map("users")
 }
@@ -386,4 +390,37 @@ model DeliveryZone {
 
   @@index([storeId, active])
   @@map("delivery_zones")
+}
+
+/// Social sign-in links. A user may have several (Google today, others later).
+model AuthIdentity {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  provider    String
+  providerUid String   @map("provider_uid")
+  email       String?  @db.Citext
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerUid])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+/// Single-use MFA recovery codes (FR-AUTH-08).
+///
+/// Stored hashed like any other credential: these are the last way into an
+/// account when a phone is lost, so a database read must not yield usable ones.
+model MfaRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, usedAt])
+  @@map("mfa_recovery_codes")
 }

@@ -42,6 +42,13 @@ const ALLOWED = new Set([
   // so there is no identity to scope to. The insert goes through a narrow
   // SECURITY DEFINER function; every read path here is platform-scoped.
   "src/modules/stores/store-application.service.ts",
+  // Redeeming an MFA recovery code happens mid-login, before a session exists.
+  // Goes through a SECURITY DEFINER function that matches one user and one
+  // unused code, and consumes it atomically.
+  "src/modules/auth/mfa.service.ts",
+  // Resolving a provider identity to a local user is the OAuth equivalent of a
+  // credential lookup: pre-identity by definition, exact-match on provider uid.
+  "src/modules/auth/oauth.service.ts",
 ]);
 
 /**

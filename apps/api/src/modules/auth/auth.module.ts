@@ -6,6 +6,8 @@ import { AuthRepository } from "./auth.repository.js";
 import { AuthService } from "./auth.service.js";
 import { InvitationController } from "./invitation.controller.js";
 import { InvitationService } from "./invitation.service.js";
+import { MfaService } from "./mfa.service.js";
+import { OAuthService } from "./oauth.service.js";
 import { PasswordService } from "./password.service.js";
 import { PermissionResolver } from "./permission-resolver.service.js";
 import { TokenService } from "./token.service.js";
@@ -22,6 +24,8 @@ import { VerificationTokenService } from "./verification-token.service.js";
   providers: [
     AuthService,
     AuthRepository,
+    MfaService,
+    OAuthService,
     AccountService,
     InvitationService,
     PasswordService,
@@ -31,6 +35,8 @@ import { VerificationTokenService } from "./verification-token.service.js";
   ],
   exports: [
     AuthService,
+    MfaService,
+    OAuthService,
     AccountService,
     InvitationService,
     PasswordService,

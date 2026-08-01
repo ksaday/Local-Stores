@@ -20,6 +20,7 @@ export interface AccessTokenClaims {
 }
 
 const ALG = "EdDSA";
+const MFA_AUDIENCE = "bba-mfa-challenge";
 
 @Injectable()
 export class TokenService implements OnModuleInit {
@@ -81,6 +82,40 @@ export class TokenService implements OnModuleInit {
       // Expired, wrong signature, wrong audience — all the same to the caller.
       // Distinguishing them tells an attacker which part of the token to fix.
       throw AppError.unauthenticated("Your session is invalid or has expired.");
+    }
+  }
+
+  /**
+   * A short-lived token proving the password step succeeded, exchanged for a
+   * session once the second factor is verified.
+   *
+   * Scoped to its own audience so it can never be presented as an access
+   * token: a token that authorises "finish logging in" must not also authorise
+   * "read this store's orders".
+   */
+  async issueMfaChallenge(userId: string): Promise<string> {
+    return new SignJWT({ purpose: "mfa_challenge" })
+      .setProtectedHeader({ alg: ALG })
+      .setSubject(userId)
+      .setJti(randomUUID())
+      .setIssuedAt()
+      .setIssuer(this.config.get("JWT_ISSUER", { infer: true }))
+      .setAudience(MFA_AUDIENCE)
+      .setExpirationTime("5m")
+      .sign(this.privateKey);
+  }
+
+  async verifyMfaChallenge(token: string): Promise<string> {
+    try {
+      const { payload } = await jwtVerify(token, this.publicKey, {
+        algorithms: [ALG],
+        issuer: this.config.get("JWT_ISSUER", { infer: true }),
+        audience: MFA_AUDIENCE,
+      });
+      if (payload.purpose !== "mfa_challenge") throw new Error("wrong purpose");
+      return payload.sub!;
+    } catch {
+      throw AppError.unauthenticated("That sign-in attempt expired. Please start again.");
     }
   }
 

@@ -9,6 +9,7 @@ import { AuditService } from "../audit/audit.service.js";
 import { AuthRepository } from "../auth/auth.repository.js";
 import { AuthService } from "../auth/auth.service.js";
 import { InvitationService } from "../auth/invitation.service.js";
+import { MfaService } from "../auth/mfa.service.js";
 import { PasswordService } from "../auth/password.service.js";
 import { TokenService } from "../auth/token.service.js";
 import { VerificationTokenService } from "../auth/verification-token.service.js";
@@ -51,7 +52,8 @@ beforeAll(async () => {
   const verification = new VerificationTokenService(prisma);
   const audit = new AuditService(prisma);
   mailer = new InMemoryMailer();
-  auth = new AuthService(prisma, repo, passwords, tokens, config as never);
+  const mfa = new MfaService(prisma, config as never);
+  auth = new AuthService(prisma, repo, passwords, tokens, mfa, config as never);
   invitations = new InvitationService(prisma, repo, verification, passwords, mailer, config as never);
   applications = new StoreApplicationService(prisma, audit, invitations);
   stores = new StoreService(prisma, audit, auth);
@@ -118,6 +120,22 @@ async function submitApplication() {
     city: "Chicago",
     state: "IL",
   });
+}
+
+/**
+ * Unwraps a login that is expected to complete without a second factor.
+ * Fails loudly if MFA intervened, rather than letting a test quietly assert
+ * against an unfinished login.
+ */
+async function loginSession(
+  auth: AuthService,
+  email: string,
+  password: string,
+  device: { ip?: string; userAgent?: string },
+) {
+  const outcome = await auth.login({ email, password }, device);
+  if (outcome.kind !== "session") throw new Error("Expected a session, got an MFA challenge.");
+  return outcome.session;
 }
 
 async function expectRejection(promise: Promise<unknown>): Promise<AppError> {
@@ -262,10 +280,7 @@ describe("store lifecycle", () => {
     const token = /invite\/([A-Za-z0-9_-]{20,})/.exec(inviteMail.body)![1]!;
     await invitations.accept({ token, name: "Clerk", password: PASSWORD });
 
-    const session = await auth.login(
-      { email: "phase4-clerk@example.com", password: PASSWORD },
-      { ip: "127.0.0.1" },
-    );
+    const session = await loginSession(auth, "phase4-clerk@example.com", PASSWORD, { ip: "127.0.0.1" });
 
     await stores.transition(storeId, "SUSPENDED", REVIEWER, "Payment dispute.");
 
@@ -385,10 +400,7 @@ describe("staff management guardrails", () => {
   });
 
   it("signs a member out when suspended", async () => {
-    const session = await auth.login(
-      { email: "phase4-clerk@example.com", password: PASSWORD },
-      { ip: "127.0.0.1" },
-    );
+    const session = await loginSession(auth, "phase4-clerk@example.com", PASSWORD, { ip: "127.0.0.1" });
     await staff.changeStatus(storeId, clerkMembershipId, "SUSPENDED", REVIEWER);
 
     await expect(auth.refresh(session.refreshToken, { ip: "127.0.0.1" })).rejects.toBeInstanceOf(

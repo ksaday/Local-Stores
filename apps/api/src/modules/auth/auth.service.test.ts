@@ -5,6 +5,7 @@ import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuthRepository } from "./auth.repository.js";
 import { AuthService } from "./auth.service.js";
+import { MfaService } from "./mfa.service.js";
 import { PasswordService } from "./password.service.js";
 import { TokenService } from "./token.service.js";
 
@@ -43,7 +44,8 @@ beforeAll(async () => {
   const tokens = new TokenService(config as never);
   await tokens.onModuleInit();
   const passwords = new PasswordService(config as never);
-  auth = new AuthService(prisma, new AuthRepository(prisma), passwords, tokens, config as never);
+  const mfa = new MfaService(prisma, config as never);
+  auth = new AuthService(prisma, new AuthRepository(prisma), passwords, tokens, mfa, config as never);
 });
 
 afterAll(async () => {
@@ -68,6 +70,16 @@ async function expectRejection(promise: Promise<unknown>): Promise<AppError> {
   throw new Error("Expected the call to reject, but it resolved.");
 }
 
+/**
+ * Unwraps a login expected to complete without a second factor, so a test can
+ * never quietly assert against an unfinished login.
+ */
+async function loginSession(email: string, password: string) {
+  const outcome = await auth.login({ email, password }, DEVICE);
+  if (outcome.kind !== "session") throw new Error("Expected a session, got an MFA challenge.");
+  return outcome.session;
+}
+
 /** Superuser connection: fixtures must not be subject to the policies under test. */
 async function cleanup(): Promise<void> {
   const admin = new PrismaService();
@@ -87,7 +99,7 @@ async function cleanup(): Promise<void> {
 describe("registration and login as the RLS-restricted role", () => {
   it("registers a user and logs them in", async () => {
     await auth.register({ email: EMAIL, password: PASSWORD, name: "Rotation Test" });
-    const session = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(EMAIL, PASSWORD);
 
     expect(session.accessToken.split(".")).toHaveLength(3);
     expect(session.refreshToken.length).toBeGreaterThan(20);
@@ -96,7 +108,7 @@ describe("registration and login as the RLS-restricted role", () => {
   it("rejects a wrong password", async () => {
     await auth.register({ email: EMAIL, password: PASSWORD, name: "Rotation Test" });
     await expect(
-      auth.login({ email: EMAIL, password: "wrong password entirely" }, DEVICE),
+      loginSession(EMAIL, "wrong password entirely"),
     ).rejects.toBeInstanceOf(AppError);
   });
 
@@ -105,10 +117,10 @@ describe("registration and login as the RLS-restricted role", () => {
     await auth.register({ email: EMAIL, password: PASSWORD, name: "Rotation Test" });
 
     const wrongPassword = await expectRejection(
-      auth.login({ email: EMAIL, password: "wrong password entirely" }, DEVICE),
+      loginSession(EMAIL, "wrong password entirely"),
     );
     const noSuchUser = await expectRejection(
-      auth.login({ email: "ghost@example.com", password: PASSWORD }, DEVICE),
+      loginSession("ghost@example.com", PASSWORD),
     );
 
     expect(noSuchUser.message).toBe(wrongPassword.message);
@@ -125,7 +137,7 @@ describe("registration and login as the RLS-restricted role", () => {
     ).resolves.toEqual({ status: "ok" });
 
     // ...and the original account is untouched.
-    await expect(auth.login({ email: EMAIL, password: PASSWORD }, DEVICE)).resolves.toBeDefined();
+    await expect(loginSession(EMAIL, PASSWORD)).resolves.toBeDefined();
   });
 });
 
@@ -135,7 +147,7 @@ describe("refresh token rotation", () => {
   });
 
   it("issues a new refresh token on every use", async () => {
-    const first = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const first = await loginSession(EMAIL, PASSWORD);
     const second = await auth.refresh(first.refreshToken, DEVICE);
 
     expect(second.refreshToken).not.toBe(first.refreshToken);
@@ -143,7 +155,7 @@ describe("refresh token rotation", () => {
   });
 
   it("rejects a token that has already been rotated", async () => {
-    const first = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const first = await loginSession(EMAIL, PASSWORD);
     await auth.refresh(first.refreshToken, DEVICE);
 
     await expect(auth.refresh(first.refreshToken, DEVICE)).rejects.toBeInstanceOf(AppError);
@@ -153,7 +165,7 @@ describe("refresh token rotation", () => {
     // The theft scenario: an attacker captures token A, the legitimate client
     // rotates it to B, then the attacker replays A. We cannot tell which party
     // is which, so both are cut off and the user re-authenticates.
-    const first = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const first = await loginSession(EMAIL, PASSWORD);
     const second = await auth.refresh(first.refreshToken, DEVICE);
 
     await expect(auth.refresh(first.refreshToken, DEVICE)).rejects.toBeInstanceOf(AppError);
@@ -165,8 +177,8 @@ describe("refresh token rotation", () => {
   it("leaves other login sessions alive when one family is revoked", async () => {
     // Two independent logins are separate families — a compromise of one
     // device must not sign the user out everywhere.
-    const deviceA = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
-    const deviceB = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const deviceA = await loginSession(EMAIL, PASSWORD);
+    const deviceB = await loginSession(EMAIL, PASSWORD);
 
     await auth.refresh(deviceA.refreshToken, DEVICE);
     await expect(auth.refresh(deviceA.refreshToken, DEVICE)).rejects.toBeInstanceOf(AppError);
@@ -179,18 +191,17 @@ describe("refresh token rotation", () => {
   });
 
   it("rejects a token after logout", async () => {
-    const session = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(EMAIL, PASSWORD);
     await auth.logout(session.refreshToken);
 
     await expect(auth.refresh(session.refreshToken, DEVICE)).rejects.toBeInstanceOf(AppError);
   });
 
   it("revokeAllSessions kills every family for the user", async () => {
-    const a = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
-    const b = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const a = await loginSession(EMAIL, PASSWORD);
+    const b = await loginSession(EMAIL, PASSWORD);
 
-    const user = await auth
-      .login({ email: EMAIL, password: PASSWORD }, DEVICE)
+    const user = await loginSession(EMAIL, PASSWORD)
       .then(() => new AuthRepository(prisma).findUserByEmail(EMAIL));
 
     const revoked = await auth.revokeAllSessions(user!.id);
@@ -202,7 +213,7 @@ describe("refresh token rotation", () => {
 
   it("gives an identical error for replayed, unknown, and revoked tokens", async () => {
     // A stolen token must not reveal whether it was ever valid.
-    const session = await auth.login({ email: EMAIL, password: PASSWORD }, DEVICE);
+    const session = await loginSession(EMAIL, PASSWORD);
     await auth.refresh(session.refreshToken, DEVICE);
 
     const replayed = await expectRejection(auth.refresh(session.refreshToken, DEVICE));

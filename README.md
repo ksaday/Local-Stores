@@ -28,16 +28,65 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phase 1 (Foundation) + first slice of Phase 3 (Tenancy) in progress.**
+**Phase 2 (Auth & RBAC) complete. Phase 4 (Store management) API complete.**
+159 tests passing. `apps/web` is not started — everything below is API-only.
 
-Done so far:
-- Monorepo scaffold: `apps/web` (not yet started), `apps/api`, `apps/worker` (not yet started), `packages/shared`, `packages/ui` (not yet started)
-- `packages/shared`: permission catalog + guardrails, order state machine, error codes — all with passing unit tests
-- `apps/api`: initial Prisma schema (users, stores, store_memberships, permission overrides, refresh_tokens)
-- **PostgreSQL Row-Level Security policies applied and verified** — the cross-tenant isolation suite (`apps/api/src/infra/prisma/tenant-isolation.test.ts`) passes against the restricted `bba_app` role, proving store A cannot read or write store B's data even through a bug in application code
-- Local dev environment: Postgres 16 + Redis via Homebrew (not Docker — no Docker Desktop on this machine; `docker-compose.yml` can be added later for portability)
+### Done
 
-Not started: NestJS API server itself (controllers/services/guards), Next.js web app, worker, catalog/inventory/orders/payments schema, everything in Phases 4-12.
+**Foundation** — monorepo (`apps/api`, `packages/shared`), NestJS with a
+validated-at-boot config, RFC 9457 Problem Details, response envelope, zod
+validation, AsyncLocalStorage request context.
+
+**Tenancy** — PostgreSQL RLS on every table, enforced through a per-request
+transaction context. The cross-tenant isolation suite runs as the restricted
+`bba_app` role and is the release gate.
+
+**Auth** — argon2id, EdDSA access tokens with membership claims, refresh
+rotation with family-wide revocation on replay, email verification, password
+reset, staff invitations, session management, TOTP MFA with recovery codes,
+Google OAuth account linking.
+
+**Authorization** — three guards registered globally so routes are protected by
+default. Store-scoped permissions resolve from membership + guardrailed
+overrides; `platform:*` permissions check platform role instead.
+
+**Store management** — public applications, Super Admin review and
+provisioning, lifecycle transitions, hours, tax rates, delivery zones with
+serviceability checks, branding with WCAG AA contrast validation, staff
+management, media upload pipeline, append-only audit log.
+
+### Not started
+
+- `apps/web` (Next.js) — all four route groups from plan §11.1
+- `apps/worker` — BullMQ; media processing and mail currently run inline
+- Phases 5–12: catalog, inventory, cart/checkout/orders, payments, delivery,
+  reporting, hardening, deployment
+- OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
+  logic underneath it is built and tested; only the provider round-trip is
+  missing, and it needs real Google credentials to exercise.
+
+## Things worth knowing before you change anything
+
+**`prisma.unscoped()` is almost always wrong.** Three separate bugs in Phase 2
+had the identical shape: a query written before anyone considered whose data it
+was, silently returning or affecting zero rows under RLS, with no exception.
+Two would have shipped as "login is impossible" and "no staff member has any
+permission". `src/infra/prisma/unscoped-usage.test.ts` confines it to files
+that genuinely need it — extend that list deliberately, with a reason.
+
+**`INSERT ... RETURNING` applies the SELECT policy.** Prisma always emits
+RETURNING, so `create()` fails on any row written where the writer cannot read
+it back — audit entries, invitation tokens with a null user, media rows. Use a
+raw INSERT for those. Widening the read policy instead would expose data.
+
+**Pre-identity reads go through SECURITY DEFINER functions.** Login, refresh,
+redeeming a mailed token, OAuth identity lookup, recovery codes. Each takes an
+exact-match credential and returns at most one row, so none can enumerate.
+Adding a sixth deserves the scrutiny of widening an RLS policy.
+
+**Auth tests run as `bba_app`, not the superuser.** A superuser bypasses RLS
+entirely, so they would pass against a configuration that cannot work in
+production.
 
 ## Local development
 
@@ -82,12 +131,16 @@ service containers, not a shared local install.
 
 ## Next steps (in order)
 
-1. NestJS bootstrap in `apps/api`: guards (`JwtAuthGuard`, `StoreScopeGuard`,
-   `PermissionsGuard`), the `auth` module (register/login/refresh), wired to the
-   `packages/shared` permission catalog.
-2. Extend the Prisma schema with the remaining Phase 3 tables as each later phase needs
-   them, rather than all 40+ tables up front — schema grows with the roadmap.
-3. Next.js app in `apps/web` with the four route groups from
-   `docs/plan/11-frontend-architecture.md` §11.1.
-4. Do not start Phase 4 (store management) until the auth + permission guard from step 1
-   has its own test coverage — every later phase depends on it being right.
+1. **`apps/web`** — the Next.js app, per plan §11.1's four route groups. This is
+   the largest remaining gap: everything built so far is API-only, and the
+   platform review console and store settings UI are Phase 4 deliverables that
+   have no frontend yet.
+2. **Phase 5 (Catalog)** — categories, products, variants, public storefront
+   browsing with SEO. Depends on the media pipeline, which is done.
+3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+   already-tested linking logic. Needs real Google credentials.
+4. **`docker-compose.yml`** — before a second developer or CI (see above).
+
+Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
+and the risk register in §16. Record any deviation from the plan as an ADR
+rather than letting the code and the documents drift apart.

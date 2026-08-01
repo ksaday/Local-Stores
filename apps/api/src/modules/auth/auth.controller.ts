@@ -8,6 +8,7 @@ import { AppError } from "../../common/errors/app-error.js";
 import type { AuthenticatedRequest } from "../../common/guards/jwt-auth.guard.js";
 import type { Env } from "../../config/env.js";
 import { AuthService, type IssuedSession } from "./auth.service.js";
+import { MfaService } from "./mfa.service.js";
 
 const ACCESS_COOKIE = "bba_at";
 const REFRESH_COOKIE = "bba_rt";
@@ -22,6 +23,15 @@ const RegisterSchema = z
   })
   .strict();
 
+const MfaLoginSchema = z
+  .object({
+    challengeToken: z.string().min(1).max(2048),
+    code: z.string().min(6).max(32),
+  })
+  .strict();
+
+const MfaCodeSchema = z.object({ code: z.string().min(6).max(32) }).strict();
+
 const LoginSchema = z
   .object({
     email: z.string().email().max(254),
@@ -33,6 +43,7 @@ const LoginSchema = z
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
+    private readonly mfa: MfaService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -53,12 +64,75 @@ export class AuthController {
     @Req() req: AuthenticatedRequest,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const session = await this.auth.login(body, {
+    const outcome = await this.auth.login(body, {
+      ip: req.ip,
+      userAgent: req.header("user-agent"),
+    });
+
+    if (outcome.kind === "mfa_required") {
+      // No cookies are set here — nothing has been authorised yet.
+      return { status: "mfa_required", challengeToken: outcome.challengeToken };
+    }
+
+    this.setSessionCookies(res, outcome.session);
+    return { status: "ok" };
+  }
+
+  @Public()
+  @Post("mfa/verify-login")
+  @HttpCode(200)
+  async verifyMfaLogin(
+    @Body(zodBody(MfaLoginSchema)) body: z.infer<typeof MfaLoginSchema>,
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const session = await this.auth.completeMfaLogin(body.challengeToken, body.code, {
       ip: req.ip,
       userAgent: req.header("user-agent"),
     });
     this.setSessionCookies(res, session);
     return { status: "ok" };
+  }
+
+  // ── MFA enrollment (authenticated) ───────────────────────────────────────
+
+  @Post("mfa/setup")
+  @HttpCode(200)
+  async setupMfa(@Req() req: AuthenticatedRequest) {
+    if (!req.auth) throw AppError.unauthenticated();
+    return this.mfa.beginEnrollment(req.auth.sub, req.auth.email);
+  }
+
+  @Post("mfa/confirm")
+  @HttpCode(200)
+  async confirmMfa(
+    @Body(zodBody(MfaCodeSchema)) body: z.infer<typeof MfaCodeSchema>,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (!req.auth) throw AppError.unauthenticated();
+    // Recovery codes are returned exactly once, here.
+    return this.mfa.confirmEnrollment(req.auth.sub, req.auth.email, body.code);
+  }
+
+  @Post("mfa/recovery-codes")
+  @HttpCode(200)
+  async regenerateRecoveryCodes(@Req() req: AuthenticatedRequest) {
+    if (!req.auth) throw AppError.unauthenticated();
+    return { recoveryCodes: await this.mfa.regenerateRecoveryCodes(req.auth.sub) };
+  }
+
+  @Post("mfa/disable")
+  @HttpCode(204)
+  async disableMfa(
+    @Body(zodBody(MfaCodeSchema)) body: z.infer<typeof MfaCodeSchema>,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (!req.auth) throw AppError.unauthenticated();
+    // Requires a valid code: otherwise a stolen session could strip the second
+    // factor, which is exactly what the second factor exists to prevent.
+    const ok = await this.mfa.verifyChallenge(req.auth.sub, req.auth.email, body.code);
+    if (!ok) throw AppError.validation("That code isn't right.");
+    await this.mfa.disable(req.auth.sub);
   }
 
   @Public()
