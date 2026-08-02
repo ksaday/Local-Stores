@@ -86,7 +86,7 @@ async function seed(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   await asAdmin(async (db) => {
-    await db.$executeRaw`DELETE FROM stripe_events WHERE store_id = ${STORE} OR store_id IS NULL`;
+    await db.$executeRaw`DELETE FROM stripe_events WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM audit_logs WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM payments WHERE store_id = ${STORE}`;
@@ -147,11 +147,14 @@ describe("authenticity", () => {
   });
 
   it("records nothing when the signature fails", async () => {
-    const { body } = event("payment_intent.succeeded", { id: "pi_x" });
+    // Scoped to this event's own id rather than counting the whole table:
+    // real webhook traffic from manual testing also lands there, and a global
+    // count would make this pass or fail for reasons unrelated to the code.
+    const { id, body } = event("payment_intent.succeeded", { id: "pi_x" });
     await webhooks.handle(body, "wrong").catch(() => undefined);
 
     const rows = await asAdmin((db) =>
-      db.$queryRaw<{ count: bigint }[]>`SELECT count(*) FROM stripe_events`,
+      db.$queryRaw<{ count: bigint }[]>`SELECT count(*) FROM stripe_events WHERE event_id = ${id}`,
     );
     expect(Number(rows[0]!.count)).toBe(0);
   });
@@ -193,12 +196,12 @@ describe("idempotency", () => {
   });
 
   it("records every event it accepts, so nothing is silently lost", async () => {
-    const { body } = event("customer.created", { id: "cus_x" });
+    const { id, body } = event("customer.created", { id: "cus_x" });
     await webhooks.handle(body, "valid");
 
     const rows = await asAdmin((db) =>
       db.$queryRaw<{ type: string; processed_at: Date | null }[]>`
-        SELECT type, processed_at FROM stripe_events`,
+        SELECT type, processed_at FROM stripe_events WHERE event_id = ${id}`,
     );
     expect(rows).toHaveLength(1);
     // Recorded and marked processed even though we do not act on it — the row
@@ -245,6 +248,29 @@ describe("payment succeeded", () => {
     await webhooks.handle(body, "valid");
 
     expect(await readStock()).toMatchObject({ on_hand: 4, reserved: 0 });
+  });
+
+  it("retires the pending cash row so nobody is asked to collect twice", async () => {
+    // An order carries a CASH row from the moment it is placed. Left alone
+    // after a card succeeds, the workbench reads it as money still owed and
+    // shows a clerk "Take $17.64 cash" for an order already charged — the
+    // customer pays twice.
+    const order = await placeOrder();
+    const intent = await payments.createCardPayment(STORE, order.id, crypto.randomUUID(), { userId: BUYER });
+    const { body } = event("payment_intent.succeeded", {
+      id: intent.intentId,
+      metadata: { storeId: STORE, orderId: order.id },
+    });
+    await webhooks.handle(body, "valid");
+
+    const detail = await orders.getForStore(STORE, order.id);
+    const cash = detail.payments.find((p) => p.provider === "CASH")!;
+    const card = detail.payments.find((p) => p.provider === "STRIPE")!;
+
+    expect(card.status).toBe("SUCCEEDED");
+    expect(cash.status).toBe("CANCELED");
+    // Exactly one settled payment, so no surface can read two.
+    expect(detail.payments.filter((p) => p.status === "SUCCEEDED")).toHaveLength(1);
   });
 
   it("attributes the confirmation to the system, not a person", async () => {
@@ -300,6 +326,115 @@ describe("payment failed", () => {
   });
 });
 
+describe("refunds", () => {
+  /** Puts a PENDING refund on a paid order and returns its Stripe id. */
+  async function pendingRefund(): Promise<{ orderId: string; stripeRefundId: string }> {
+    const order = await placeOrder();
+    const intent = await payments.createCardPayment(STORE, order.id, crypto.randomUUID(), { userId: BUYER });
+    const { body } = event("payment_intent.succeeded", {
+      id: intent.intentId,
+      metadata: { storeId: STORE, orderId: order.id },
+    });
+    await webhooks.handle(body, "valid");
+
+    const stripeRefundId = `re_${crypto.randomUUID().slice(0, 12)}`;
+    await asAdmin(async (db) => {
+      const [payment] = await db.$queryRaw<{ id: string }[]>`
+        SELECT id FROM payments WHERE order_id = ${order.id} AND provider = 'STRIPE'`;
+      await db.$executeRaw`
+        INSERT INTO refunds (id, store_id, payment_id, amount_cents, status, stripe_refund_id)
+        VALUES (gen_random_uuid(), ${STORE}, ${payment!.id}, 500, 'PENDING', ${stripeRefundId})`;
+    });
+    return { orderId: order.id, stripeRefundId };
+  }
+
+  async function refundStatus(orderId: string): Promise<string> {
+    const rows = await asAdmin((db) =>
+      db.$queryRaw<{ status: string }[]>`
+        SELECT r.status::text AS status FROM refunds r
+        JOIN payments p ON p.id = r.payment_id WHERE p.order_id = ${orderId}`,
+    );
+    return rows[0]!.status;
+  }
+
+  it("confirms a refund from a `refund.updated` event", async () => {
+    // These arrive with no store metadata and, for destination charges, no
+    // connected account either — so any handler that resolves a store first
+    // silently does nothing. Keyed off our own stripe_refund_id instead.
+    const { orderId, stripeRefundId } = await pendingRefund();
+
+    const { body } = event("refund.updated", {
+      id: stripeRefundId,
+      object: "refund",
+      status: "succeeded",
+    });
+    await webhooks.handle(body, "valid");
+
+    expect(await refundStatus(orderId)).toBe("SUCCEEDED");
+  });
+
+  it("confirms a refund from a `charge.refunded` event", async () => {
+    // Verified against real Stripe traffic: the charge payload has NO
+    // `refunds` key at all, only `payment_intent`. Reading `refunds.data`
+    // finds nothing and the refund stays pending forever.
+    const { orderId } = await pendingRefund();
+    const intentId = await asAdmin(async (db) => {
+      const [p] = await db.$queryRaw<{ stripe_payment_intent_id: string }[]>`
+        SELECT stripe_payment_intent_id FROM payments
+        WHERE order_id = ${orderId} AND provider = 'STRIPE'`;
+      return p!.stripe_payment_intent_id;
+    });
+
+    const { body } = event("charge.refunded", {
+      id: "ch_test",
+      object: "charge",
+      payment_intent: intentId,
+    });
+    await webhooks.handle(body, "valid");
+
+    expect(await refundStatus(orderId)).toBe("SUCCEEDED");
+  });
+
+  it("marks a failed refund as failed rather than leaving it pending", async () => {
+    const { orderId, stripeRefundId } = await pendingRefund();
+
+    const { body } = event("refund.updated", {
+      id: stripeRefundId,
+      object: "refund",
+      status: "failed",
+    });
+    await webhooks.handle(body, "valid");
+
+    expect(await refundStatus(orderId)).toBe("FAILED");
+  });
+
+  it("treats a cancelled refund as failed — the money never moved", async () => {
+    const { orderId, stripeRefundId } = await pendingRefund();
+
+    const { body } = event("refund.updated", {
+      id: stripeRefundId,
+      object: "refund",
+      status: "canceled",
+    });
+    await webhooks.handle(body, "valid");
+
+    expect(await refundStatus(orderId)).toBe("FAILED");
+  });
+
+  it("ignores a refund id we have never seen", async () => {
+    const { orderId } = await pendingRefund();
+
+    const { body } = event("refund.updated", {
+      id: "re_not_ours",
+      object: "refund",
+      status: "succeeded",
+    });
+    await webhooks.handle(body, "valid");
+
+    expect(await refundStatus(orderId)).toBe("PENDING");
+  });
+});
+
 describe("account updated", () => {
   it("flips the store to card-capable when onboarding finishes", async () => {
     // This is what saves the owner from having to come back and press a button
@@ -342,7 +477,7 @@ describe("account updated", () => {
   });
 
   it("resolves the store from the connected account when there is no metadata", async () => {
-    const { body } = event("account.updated", {
+    const { id, body } = event("account.updated", {
       id: ACCOUNT,
       charges_enabled: true,
       payouts_enabled: true,
@@ -352,7 +487,8 @@ describe("account updated", () => {
     await webhooks.handle(body, "valid");
 
     const rows = await asAdmin((db) =>
-      db.$queryRaw<{ store_id: string | null }[]>`SELECT store_id FROM stripe_events`,
+      db.$queryRaw<{ store_id: string | null }[]>`
+        SELECT store_id FROM stripe_events WHERE event_id = ${id}`,
     );
     expect(rows[0]!.store_id).toBe(STORE);
   });
@@ -362,7 +498,7 @@ describe("failures are visible", () => {
   it("keeps the event row with its error when a handler throws", async () => {
     // Recording before handling is what makes a crashed handler inspectable
     // and replayable rather than lost with the process.
-    const { body } = event("payment_intent.succeeded", {
+    const { id, body } = event("payment_intent.succeeded", {
       id: "pi_does_not_exist",
       metadata: { storeId: STORE, orderId: crypto.randomUUID() },
     });
@@ -372,7 +508,8 @@ describe("failures are visible", () => {
     await webhooks.handle(body, "valid");
 
     const rows = await asAdmin((db) =>
-      db.$queryRaw<{ processed_at: Date | null }[]>`SELECT processed_at FROM stripe_events`,
+      db.$queryRaw<{ processed_at: Date | null }[]>`
+        SELECT processed_at FROM stripe_events WHERE event_id = ${id}`,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.processed_at).not.toBeNull();

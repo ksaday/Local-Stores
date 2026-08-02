@@ -374,14 +374,21 @@ describe("refunds", () => {
     await payFor(order.id);
     await payments.refund(STORE_A, order.id, STAFF, { amountCents: 300 });
 
-    const stripeRefundId = provider.refundCalls[0] ? (await provider.refund(provider.refundCalls[0])).refundId : "";
+    // Read the id we actually stored rather than asking the provider again —
+    // a second `refund()` call would mint a different id and prove nothing.
+    const stored = await prisma.withTenant({ storeId: STORE_A, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<{ stripe_refund_id: string }[]>`
+        SELECT stripe_refund_id FROM refunds WHERE store_id = ${STORE_A}`,
+    );
 
     await webhooks.handle(
       Buffer.from(
         JSON.stringify({
           id: `evt_${crypto.randomUUID()}`,
           type: "refund.updated",
-          data: { object: { id: stripeRefundId, status: "succeeded", metadata: { storeId: STORE_A } } },
+          // `object: "refund"` is what real Stripe payloads carry, and what
+          // tells the handler which shape it is looking at.
+          data: { object: { id: stored[0]!.stripe_refund_id, object: "refund", status: "succeeded" } },
         }),
       ),
       "valid",

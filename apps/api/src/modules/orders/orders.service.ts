@@ -333,6 +333,8 @@ export class OrdersService {
         after: { orderId, amountCents: payment.amount_cents },
       });
 
+      await this.retireSupersededPayments(tx, storeId, orderId);
+
       await this.outbox.emitIn(tx, {
         type: "order.payment_recorded",
         storeId,
@@ -349,6 +351,31 @@ export class OrdersService {
     });
 
     return result;
+  }
+
+  /**
+   * Retires every other payment attempt once one of them succeeds.
+   *
+   * An order carries a CASH row from the moment it is placed, because most
+   * orders in the pilot are paid in cash. When a card payment then succeeds,
+   * that CASH row is stale — and the workbench reads it as money still owed,
+   * so a clerk is shown "Take $17.64 cash" for an order the customer has
+   * already been charged for. They pay twice.
+   *
+   * Symmetric on purpose: taking cash also retires an abandoned card intent,
+   * so a customer who gives up on the card form and pays at the counter does
+   * not leave a live intent behind them.
+   */
+  async retireSupersededPayments(
+    tx: { $executeRaw: PrismaService["$executeRaw"] },
+    storeId: string,
+    orderId: string,
+  ): Promise<void> {
+    await tx.$executeRaw`
+      UPDATE payments
+      SET status = 'CANCELED', updated_at = now()
+      WHERE order_id = ${orderId} AND store_id = ${storeId} AND status <> 'SUCCEEDED'
+    `;
   }
 
   /**

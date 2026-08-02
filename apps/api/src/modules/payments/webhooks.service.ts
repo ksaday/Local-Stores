@@ -127,6 +127,7 @@ export class StripeWebhooksService {
 
       case "charge.refunded":
       case "refund.updated":
+      case "charge.refund.updated":
         await this.onRefundUpdated(event, storeId);
         return true;
 
@@ -162,7 +163,14 @@ export class StripeWebhooksService {
         WHERE stripe_payment_intent_id = ${intentId} AND store_id = ${storeId}
         RETURNING order_id
       `;
-      return payment?.order_id ?? null;
+      if (!payment) return null;
+
+      // The order has carried a pending CASH row since it was placed. Left
+      // alone it reads as money still owed, and the workbench asks a clerk to
+      // collect cash for an order the customer has already paid by card.
+      await this.orders.retireSupersededPayments(tx, storeId, payment.order_id);
+
+      return payment.order_id;
     });
 
     if (!orderId) {
@@ -200,26 +208,56 @@ export class StripeWebhooksService {
     );
   }
 
-  /** Confirms a refund we already recorded as pending. */
-  private async onRefundUpdated(event: ProviderEvent, storeId: string | null): Promise<void> {
-    if (!storeId) return;
+  /**
+   * Confirms a refund we already recorded as pending.
+   *
+   * Keyed off our own `stripe_refund_id`, not off the store — which is the
+   * only thing that actually works here. A refund object carries no store
+   * metadata, and with destination charges these arrive as platform-level
+   * events with no connected account either, so store resolution yields null
+   * and any handler that needs it first will silently do nothing.
+   *
+   * Two payload shapes reach this:
+   *   - `refund.updated` — the refund itself, so `id` is the refund id.
+   *   - `charge.refunded` — the charge. Stripe does NOT expand `refunds.data`
+   *     in webhooks (verified against real traffic: the key is absent), so the
+   *     only usable handle is `payment_intent`.
+   */
+  private async onRefundUpdated(event: ProviderEvent, _storeId: string | null): Promise<void> {
+    const data = event.data as {
+      id?: string;
+      object?: string;
+      status?: string;
+      payment_intent?: string;
+    };
 
-    // `charge.refunded` carries the charge with a refunds list; `refund.updated`
-    // carries the refund itself. Both reach the same place.
-    const refunds = (event.data.refunds as { data?: { id: string; status: string }[] } | undefined)?.data
-      ?? [{ id: event.data.id as string, status: event.data.status as string }];
-
-    for (const refund of refunds) {
-      if (!refund?.id) continue;
-      const status = refund.status === "succeeded" ? "SUCCEEDED" : refund.status === "failed" ? "FAILED" : "PENDING";
-
-      await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
-        tx.$executeRaw`
+    // Super-admin scope: a webhook has no session, and the refund row is what
+    // tells us which store this belongs to — so we cannot scope by store
+    // before finding it.
+    await this.prisma.withTenant({ isSuperAdmin: true }, async (tx) => {
+      if (data.object === "refund" && data.id) {
+        const status = mapRefundStatus(data.status);
+        await tx.$executeRaw`
           UPDATE refunds SET status = ${status}::"RefundStatus", updated_at = now()
-          WHERE stripe_refund_id = ${refund.id} AND store_id = ${storeId}
-        `,
-      );
-    }
+          WHERE stripe_refund_id = ${data.id}
+        `;
+        return;
+      }
+
+      // A charge: reconcile every refund we hold against that payment by
+      // asking the payment row, which we own, rather than the payload.
+      if (data.payment_intent) {
+        await tx.$executeRaw`
+          UPDATE refunds r
+          SET status = 'SUCCEEDED', updated_at = now()
+          FROM payments p
+          WHERE r.payment_id = p.id
+            AND p.stripe_payment_intent_id = ${data.payment_intent}
+            AND r.status = 'PENDING'
+            AND r.stripe_refund_id IS NOT NULL
+        `;
+      }
+    });
   }
 
   /**
@@ -262,3 +300,12 @@ export class StripeWebhooksService {
   }
 }
 
+
+/** Stripe's refund states, narrowed to ours. */
+function mapRefundStatus(status: string | undefined): "SUCCEEDED" | "FAILED" | "PENDING" {
+  if (status === "succeeded") return "SUCCEEDED";
+  // `canceled` means the refund will never land, which for our books is the
+  // same outcome as failing — the money stayed where it was.
+  if (status === "failed" || status === "canceled") return "FAILED";
+  return "PENDING";
+}

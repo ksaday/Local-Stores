@@ -317,6 +317,27 @@ describe("cash payment", () => {
     expect(second.alreadyRecorded).toBe(true);
   });
 
+  it("retires an abandoned card attempt when cash is taken instead", async () => {
+    // The mirror case: a customer gives up on the card form and pays at the
+    // counter. Leaving the intent live would let it settle later against an
+    // order already paid.
+    const order = await placeOrder();
+    await asAdmin((db) =>
+      db.$executeRaw`
+        INSERT INTO payments (id, store_id, order_id, provider, stripe_payment_intent_id,
+                              amount_cents, application_fee_cents, status)
+        VALUES (gen_random_uuid(), ${STORE}, ${order.id}, 'STRIPE', ${"pi_abandoned"},
+                ${order.totalCents}, 0, 'REQUIRES_ACTION')`,
+    );
+
+    await orders.transition(STORE, order.id, "CONFIRMED", clerk);
+    await orders.recordCashPayment(STORE, order.id, CLERK);
+
+    const detail = await orders.getForStore(STORE, order.id);
+    expect(detail.payments.find((p) => p.provider === "CASH")!.status).toBe("SUCCEEDED");
+    expect(detail.payments.find((p) => p.provider === "STRIPE")!.status).toBe("CANCELED");
+  });
+
   it("never records a platform fee", async () => {
     // The no-cut promise, checked where the money actually is.
     const order = await placeOrder();
