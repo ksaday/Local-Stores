@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { BillingService } from "../modules/billing/billing.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
 
@@ -29,6 +30,7 @@ export class WorkerScheduler {
   constructor(
     private readonly orders: OrdersService,
     private readonly relay: OutboxRelay,
+    private readonly billing: BillingService,
   ) {}
 
   jobs(): ScheduledJob[] {
@@ -52,6 +54,16 @@ export class WorkerScheduler {
         run: async () => {
           const expired = await this.orders.expireStaleOrders();
           return expired > 0 ? `expired ${expired}` : "";
+        },
+      },
+      {
+        // Hourly rather than by the minute: the grace period is measured in
+        // days, and taking a shop offline is not something to do eagerly.
+        name: "billing-grace-period",
+        everyMs: 3_600_000,
+        run: async () => {
+          const suspended = await this.billing.suspendExpiredGracePeriods();
+          return suspended > 0 ? `suspended ${suspended} unpaid store(s)` : "";
         },
       },
       {

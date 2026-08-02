@@ -8,6 +8,7 @@ import { OutboxModule } from "./infra/outbox/outbox.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
+import { BillingModule } from "./modules/billing/billing.module.js";
 import { CartModule } from "./modules/cart/cart.module.js";
 import { CatalogModule } from "./modules/catalog/catalog.module.js";
 import { CheckoutModule } from "./modules/checkout/checkout.module.js";
@@ -44,6 +45,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     CheckoutModule,
     OrdersModule,
     PaymentsModule,
+    BillingModule,
     HealthModule,
   ],
   providers: [

@@ -22,6 +22,29 @@ export abstract class PaymentProvider {
 
   abstract refund(input: RefundRequest): Promise<RefundResult>;
 
+  // ── SaaS billing ─────────────────────────────────────────────────────────
+  //
+  // The platform charging the store, which is a different relationship from
+  // everything above: there the store is the merchant receiving money, here
+  // the store owner is the customer paying us. Keeping both on one interface
+  // is deliberate — one provider, one set of credentials, one webhook stream —
+  // but the two must never be conflated in calling code.
+
+  /** Creates or reuses the billing customer for a store owner. */
+  abstract ensureBillingCustomer(input: BillingCustomerRequest): Promise<string>;
+
+  /** Starts the subscription, including its free trial. */
+  abstract createSubscription(input: SubscriptionRequest): Promise<SubscriptionResult>;
+
+  /**
+   * A link to the provider's hosted billing portal.
+   *
+   * The owner manages their card, invoices and cancellation there. That is the
+   * point: card details for the subscription never reach this platform either,
+   * exactly as they do not for a shopper's payment.
+   */
+  abstract createBillingPortalSession(customerId: string, returnUrl: string): Promise<string>;
+
   /**
    * Verifies a webhook signature and returns the parsed event.
    *
@@ -95,6 +118,29 @@ export interface RefundResult {
   refundId: string;
   status: string;
   amountCents: number;
+}
+
+export interface BillingCustomerRequest {
+  storeId: string;
+  storeName: string;
+  email: string;
+  existingCustomerId?: string | null;
+}
+
+export interface SubscriptionRequest {
+  customerId: string;
+  /** The provider-side price. Without it there is nothing to subscribe to. */
+  priceId: string;
+  trialDays: number;
+  storeId: string;
+  idempotencyKey: string;
+}
+
+export interface SubscriptionResult {
+  subscriptionId: string;
+  status: string;
+  trialEndsAt: Date | null;
+  currentPeriodEnd: Date | null;
 }
 
 /** A provider event, normalised to what the handlers actually need. */

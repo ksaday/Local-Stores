@@ -4,6 +4,9 @@ import { AppError } from "../../common/errors/app-error.js";
 import {
   PaymentProvider,
   type AccountStatus,
+  type BillingCustomerRequest,
+  type SubscriptionRequest,
+  type SubscriptionResult,
   type CreateIntentRequest,
   type OnboardingLink,
   type OnboardingRequest,
@@ -177,6 +180,61 @@ export class StripePaymentProvider extends PaymentProvider {
     };
   }
 
+  // ── SaaS billing ─────────────────────────────────────────────────────────
+
+  async ensureBillingCustomer(input: BillingCustomerRequest): Promise<string> {
+    if (input.existingCustomerId) return input.existingCustomerId;
+
+    const customer = await this.stripe.customers.create({
+      email: input.email,
+      name: input.storeName,
+      // The link back to the store, so a subscription webhook can find it
+      // without us keeping a second lookup table in step.
+      metadata: { storeId: input.storeId },
+    });
+    this.logger.log(`Created billing customer ${customer.id} for store ${input.storeId}`);
+    return customer.id;
+  }
+
+  async createSubscription(input: SubscriptionRequest): Promise<SubscriptionResult> {
+    const subscription = await this.stripe.subscriptions.create(
+      {
+        customer: input.customerId,
+        items: [{ price: input.priceId }],
+        trial_period_days: input.trialDays,
+
+        // What happens when the trial ends and no card was ever added. Left to
+        // Stripe's default the subscription would silently cancel; `pause`
+        // keeps it recoverable so an owner who adds a card in week five gets
+        // their shop back rather than starting again.
+        trial_settings: {
+          end_behavior: { missing_payment_method: "pause" },
+        },
+        // Bill the card on file rather than emailing an invoice to chase.
+        collection_method: "charge_automatically",
+        payment_behavior: "default_incomplete",
+        payment_settings: { save_default_payment_method: "on_subscription" },
+        metadata: { storeId: input.storeId },
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
+
+    return {
+      subscriptionId: subscription.id,
+      status: subscription.status,
+      trialEndsAt: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
+      currentPeriodEnd: currentPeriodEnd(subscription),
+    };
+  }
+
+  async createBillingPortalSession(customerId: string, returnUrl: string): Promise<string> {
+    const session = await this.stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+    return session.url;
+  }
+
   async parseWebhook(rawBody: Buffer, signature: string): Promise<ProviderEvent> {
     let event: Stripe.Event;
     try {
@@ -199,4 +257,19 @@ export class StripePaymentProvider extends PaymentProvider {
       createdAt: new Date(event.created * 1000),
     };
   }
+}
+
+/**
+ * The end of the current billing period.
+ *
+ * Stripe moved this from the subscription to its items, so it is read from the
+ * first item with a fallback — a version bump should not silently produce a
+ * subscription whose renewal date is null everywhere in the UI.
+ */
+function currentPeriodEnd(subscription: Stripe.Subscription): Date | null {
+  const item = subscription.items?.data?.[0] as { current_period_end?: number } | undefined;
+  const seconds =
+    item?.current_period_end ??
+    (subscription as unknown as { current_period_end?: number }).current_period_end;
+  return seconds ? new Date(seconds * 1000) : null;
 }

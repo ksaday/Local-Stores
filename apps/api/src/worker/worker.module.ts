@@ -4,6 +4,7 @@ import { validateEnv } from "../config/env.js";
 import { PrismaModule } from "../infra/prisma/prisma.module.js";
 import { OutboxModule } from "../infra/outbox/outbox.module.js";
 import { AuditModule } from "../modules/audit/audit.module.js";
+import { BillingModule } from "../modules/billing/billing.module.js";
 import { OrdersModule } from "../modules/orders/orders.module.js";
 import { OutboxRelay } from "./outbox-relay.js";
 import { WorkerScheduler } from "./scheduler.js";
@@ -26,6 +27,7 @@ import { WorkerScheduler } from "./scheduler.js";
     OutboxModule,
     AuditModule,
     OrdersModule,
+    BillingModule,
   ],
   providers: [OutboxRelay, WorkerScheduler],
 })

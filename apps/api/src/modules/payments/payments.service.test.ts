@@ -7,6 +7,7 @@ import { CheckoutService } from "../checkout/checkout.service.js";
 import { ConfiguredRateTaxProvider } from "../checkout/tax.provider.js";
 import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { OrdersService } from "../orders/orders.service.js";
+import { BillingService } from "../billing/billing.service.js";
 import { PaymentsService } from "./payments.service.js";
 import { StripeWebhooksService } from "./webhooks.service.js";
 
@@ -26,6 +27,7 @@ const ACCOUNT_B = "acct_store_b";
 let prisma: PrismaService;
 let provider: FakePaymentProvider;
 let payments: PaymentsService;
+let billing: BillingService;
 let webhooks: StripeWebhooksService;
 let orders: OrdersService;
 let cart: CartService;
@@ -50,8 +52,9 @@ beforeEach(async () => {
   const audit = new AuditService(prisma);
   const outbox = new OutboxService(prisma);
   payments = new PaymentsService(prisma, provider, audit);
+  billing = new BillingService(prisma, provider, audit);
   orders = new OrdersService(prisma, audit, outbox);
-  webhooks = new StripeWebhooksService(prisma, provider, orders);
+  webhooks = new StripeWebhooksService(prisma, provider, orders, billing);
   cart = new CartService(prisma);
   checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox);
 });

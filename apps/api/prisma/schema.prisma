@@ -168,6 +168,7 @@ model Store {
   orders            Order[]
   customerRelations CustomerStoreRelation[]
   refunds           Refund[]
+  subscription      StoreSubscription?
 
   @@map("stores")
 }
@@ -889,4 +890,66 @@ model OutboxEvent {
 
   @@index([storeId, createdAt])
   @@map("outbox_events")
+}
+
+// ---------------------------------------------------------------------------
+// SaaS billing — the platform charging the store (plan §18.5a)
+// ---------------------------------------------------------------------------
+
+/// SaaS plans. v2.0 ships exactly one row.
+///
+/// The table and the `planCode` FK exist so a second tier is later a row
+/// rather than a migration — but no plan-gating or upgrade logic ships.
+model Plan {
+  code           String   @id
+  name           String
+  priceCents     Int      @map("price_cents")
+  interval       String   @default("month")
+  trialDays      Int      @default(30) @map("trial_days")
+  /// Zero, and a CHECK constraint keeps it there. BBA takes no cut of sales.
+  platformFeeBps Int      @default(0) @map("platform_fee_bps")
+  limits         Json     @default("{}")
+  stripePriceId  String?  @map("stripe_price_id")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  subscriptions StoreSubscription[]
+
+  @@map("plans")
+}
+
+/// A store's subscription to the platform.
+///
+/// Not to be confused with Connect: this is the store owner paying us, where
+/// Connect is the store being paid by its own customers.
+model StoreSubscription {
+  id                   String             @id @default(uuid())
+  storeId              String             @unique @map("store_id")
+  planCode             String             @map("plan_code")
+  stripeCustomerId     String?            @map("stripe_customer_id")
+  stripeSubscriptionId String?            @map("stripe_subscription_id")
+  status               SubscriptionStatus @default(TRIALING)
+  trialEndsAt          DateTime?          @map("trial_ends_at")
+  currentPeriodEnd     DateTime?          @map("current_period_end")
+  /// When the account first went unpaid. The grace period runs from here, so
+  /// it does not restart on every card retry.
+  pastDueSince         DateTime?          @map("past_due_since")
+  /// Set when suspended for non-payment, so it can be told apart from a
+  /// suspension a Super Admin applied by hand.
+  suspendedAt          DateTime?          @map("suspended_at")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  store Store @relation(fields: [storeId], references: [id])
+  plan  Plan  @relation(fields: [planCode], references: [code])
+
+  @@map("store_subscriptions")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
 }

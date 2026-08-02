@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { PaymentProvider, type ProviderEvent } from "../../infra/payments/payment.provider.js";
+import { BillingService } from "../billing/billing.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 
 export interface WebhookOutcome {
@@ -21,6 +22,7 @@ export class StripeWebhooksService {
     private readonly prisma: PrismaService,
     private readonly provider: PaymentProvider,
     private readonly orders: OrdersService,
+    private readonly billing: BillingService,
   ) {}
 
   /**
@@ -133,6 +135,14 @@ export class StripeWebhooksService {
 
       case "account.updated":
         await this.onAccountUpdated(event, storeId);
+        return true;
+
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted":
+      case "customer.subscription.paused":
+      case "customer.subscription.resumed":
+        await this.onSubscriptionChanged(event);
         return true;
 
       default:
@@ -258,6 +268,40 @@ export class StripeWebhooksService {
         `;
       }
     });
+  }
+
+  /**
+   * The store's own subscription to the platform changed.
+   *
+   * Stripe is the authority on whether a shop has paid us; this mirrors what
+   * it says and lets the billing service decide the consequences. Note this is
+   * entirely separate from a store's Connect account — a shop with flawless
+   * payment processing can still stop paying its own bill.
+   */
+  private async onSubscriptionChanged(event: ProviderEvent): Promise<void> {
+    const sub = event.data as {
+      id?: string;
+      status?: string;
+      trial_end?: number;
+      current_period_end?: number;
+      items?: { data?: { current_period_end?: number }[] };
+    };
+    if (!sub.id || !sub.status) return;
+
+    // Stripe moved the period end onto subscription items; read both so a
+    // version change does not silently null out every renewal date.
+    const periodEnd = sub.items?.data?.[0]?.current_period_end ?? sub.current_period_end;
+
+    const result = await this.billing.applyProviderStatus({
+      subscriptionId: sub.id,
+      status: sub.status,
+      currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : null,
+      trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
+    });
+
+    if (result) {
+      this.logger.log(`Store ${result.storeId} subscription -> ${result.status}`);
+    }
   }
 
   /**

@@ -1,9 +1,10 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { Env } from "../../config/env.js";
 import { PaymentProvider } from "../../infra/payments/payment.provider.js";
 import { StripePaymentProvider } from "../../infra/payments/stripe.provider.js";
 import { UnconfiguredPaymentProvider } from "../../infra/payments/unconfigured.provider.js";
+import { BillingModule } from "../billing/billing.module.js";
 import { OrdersModule } from "../orders/orders.module.js";
 import { PaymentsController } from "./payments.controller.js";
 import { PaymentsService } from "./payments.service.js";
@@ -11,7 +12,10 @@ import { StripeWebhooksController } from "./webhooks.controller.js";
 import { StripeWebhooksService } from "./webhooks.service.js";
 
 @Module({
-  imports: [OrdersModule],
+  // forwardRef because the two genuinely depend on each other: billing needs
+  // the payment provider, and the webhook handler — which lives here — needs
+  // to apply subscription changes. One webhook stream carries both.
+  imports: [OrdersModule, forwardRef(() => BillingModule)],
   controllers: [PaymentsController, StripeWebhooksController],
   providers: [
     PaymentsService,
@@ -32,6 +36,6 @@ import { StripeWebhooksService } from "./webhooks.service.js";
       },
     },
   ],
-  exports: [PaymentsService],
+  exports: [PaymentsService, PaymentProvider],
 })
 export class PaymentsModule {}

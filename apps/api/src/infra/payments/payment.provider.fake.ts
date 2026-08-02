@@ -5,7 +5,10 @@ import {
   type CreateIntentRequest,
   type OnboardingLink,
   type OnboardingRequest,
+  type BillingCustomerRequest,
   type PaymentIntentResult,
+  type SubscriptionRequest,
+  type SubscriptionResult,
   type ProviderEvent,
   type RefundRequest,
   type RefundResult,
@@ -131,6 +134,46 @@ export class FakePaymentProvider extends PaymentProvider {
     };
     this.refundsByKey.set(input.idempotencyKey, result);
     return result;
+  }
+
+  // ── SaaS billing ─────────────────────────────────────────────────────────
+
+  readonly subscriptionCalls: SubscriptionRequest[] = [];
+  private readonly customersByStore = new Map<string, string>();
+  private readonly subscriptionsByKey = new Map<string, SubscriptionResult>();
+
+  async ensureBillingCustomer(input: BillingCustomerRequest): Promise<string> {
+    if (input.existingCustomerId) return input.existingCustomerId;
+
+    // Stable per store, so calling twice does not silently create a second
+    // customer and bill the same shop twice.
+    const existing = this.customersByStore.get(input.storeId);
+    if (existing) return existing;
+
+    const id = `cus_${randomUUID().slice(0, 12)}`;
+    this.customersByStore.set(input.storeId, id);
+    return id;
+  }
+
+  async createSubscription(input: SubscriptionRequest): Promise<SubscriptionResult> {
+    this.subscriptionCalls.push(input);
+
+    const existing = this.subscriptionsByKey.get(input.idempotencyKey);
+    if (existing) return existing;
+
+    const trialEndsAt = new Date(Date.now() + input.trialDays * 86_400_000);
+    const result: SubscriptionResult = {
+      subscriptionId: `sub_${randomUUID().slice(0, 12)}`,
+      status: input.trialDays > 0 ? "trialing" : "active",
+      trialEndsAt,
+      currentPeriodEnd: trialEndsAt,
+    };
+    this.subscriptionsByKey.set(input.idempotencyKey, result);
+    return result;
+  }
+
+  async createBillingPortalSession(customerId: string, returnUrl: string): Promise<string> {
+    return `https://billing.stripe.test/p/${customerId}?return=${encodeURIComponent(returnUrl)}`;
   }
 
   /**

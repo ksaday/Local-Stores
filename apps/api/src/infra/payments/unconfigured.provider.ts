@@ -4,6 +4,7 @@ import {
   type AccountStatus,
   type OnboardingLink,
   type PaymentIntentResult,
+  type SubscriptionResult,
   type ProviderEvent,
   type RefundResult,
 } from "./payment.provider.js";
@@ -43,6 +44,18 @@ export class UnconfiguredPaymentProvider extends PaymentProvider {
   }
 
   async refund(): Promise<RefundResult> {
+    throw unconfigured();
+  }
+
+  async ensureBillingCustomer(): Promise<string> {
+    throw unconfigured();
+  }
+
+  async createSubscription(): Promise<SubscriptionResult> {
+    throw unconfigured();
+  }
+
+  async createBillingPortalSession(): Promise<string> {
     throw unconfigured();
   }
 
