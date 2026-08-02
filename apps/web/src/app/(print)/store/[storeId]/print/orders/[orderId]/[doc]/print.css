@@ -1,0 +1,224 @@
+/* Print documents.
+ *
+ * Deliberately plain CSS rather than Tailwind utilities: these files are read
+ * by whoever is debugging why a receipt printer produced garbage, and a wall
+ * of utility classes is the wrong thing to hand that person.
+ *
+ * Everything is black on white. Receipt printers are monochrome and many
+ * kitchen printers are too, so a colour that carries meaning on screen comes
+ * out as an indistinguishable grey on paper.
+ */
+
+.doc {
+  color: #000;
+  background: #fff;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.doc hr {
+  border: 0;
+  border-top: 1px dashed #000;
+  margin: 8px 0;
+}
+
+.doc .center {
+  text-align: center;
+}
+.doc .muted {
+  color: #444;
+}
+.doc .small {
+  font-size: 0.85em;
+}
+.doc .amount {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Receipt ──────────────────────────────────────────────────────────────
+ * 80mm roll minus printer margins. Monospace so the amount column lines up:
+ * a proportional font makes a totals column that visibly does not.
+ */
+.doc-receipt {
+  width: 72mm;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.doc-receipt .shop-name {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 2px;
+}
+
+.doc-receipt p {
+  margin: 2px 0;
+}
+
+.doc-receipt table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.doc-receipt .lines td {
+  vertical-align: top;
+  padding: 2px 0;
+}
+
+.doc-receipt .lines .qty {
+  width: 2.5em;
+}
+
+.doc-receipt .totals td {
+  padding: 1px 0;
+}
+
+.doc-receipt .grand td {
+  font-weight: 700;
+  font-size: 14px;
+  padding-top: 4px;
+  border-top: 1px solid #000;
+}
+
+.doc-receipt footer {
+  margin-top: 12px;
+}
+
+/* ── Pick list ────────────────────────────────────────────────────────────
+ * A4/Letter, and large. This is read at arm's length by someone moving
+ * quickly with their hands full, so the quantity is the biggest thing on it.
+ */
+.doc-picklist {
+  max-width: 190mm;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+}
+
+.doc-picklist h1 {
+  font-size: 32px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.doc-picklist .meta {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: #333;
+}
+
+/* A note is the expensive thing to miss — allergies, "leave at the back
+   door" — so it gets a heavy border rather than a colour that will not
+   survive a monochrome printer. */
+.doc-picklist .callout {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 3px solid #000;
+  font-size: 18px;
+}
+
+.doc-picklist .pick-items {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+
+.doc-picklist .pick-items li {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid #999;
+  /* Never split a line item across a page break — half an item on each sheet
+     is how something gets packed twice or not at all. */
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.doc-picklist .pick-qty {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.doc-picklist .pick-name {
+  flex: 1 1 auto;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.doc-picklist .pick-variant,
+.doc-picklist .pick-sku {
+  display: block;
+  font-size: 14px;
+  color: #333;
+}
+
+.doc-picklist .pick-box {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #000;
+  margin-top: 4px;
+}
+
+.doc-picklist .address {
+  margin-top: 24px;
+  break-inside: avoid;
+}
+
+.doc-picklist .address h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 4px;
+}
+
+.doc-picklist address {
+  font-style: normal;
+  font-size: 18px;
+}
+
+/* ── Print behaviour ───────────────────────────────────────────────────── */
+
+@media print {
+  /* The toolbar is for the screen. A receipt with a "Print" button on it is
+     the classic tell that nobody ever tested the printed output. */
+  .no-print {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff;
+    margin: 0;
+    padding: 0;
+  }
+
+  .doc {
+    padding: 0;
+    margin: 0;
+  }
+
+  /* Browsers drop backgrounds and lighten text when printing by default,
+     which turns the pick list's note border into something barely visible. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  @page {
+    margin: 8mm;
+  }
+}
+
+/* Roll printers have no page size to speak of; asking for margins on one
+   wastes paper on every single receipt. */
+@media print {
+  .doc-receipt {
+    width: auto;
+  }
+}

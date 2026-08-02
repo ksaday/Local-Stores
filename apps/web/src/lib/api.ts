@@ -52,9 +52,23 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
   if (authenticated) {
     const jar = await cookies();
+    // An allowlist rather than forwarding the whole jar: everything sent here
+    // is a credential the API will act on, and unrelated cookies (analytics,
+    // anything a third party sets on this domain) have no business crossing
+    // the BFF boundary.
+    //
+    // `bba_cart` is the guest cart key and `bba_order_*` are per-order claim
+    // tokens — both are identities to the API's RLS, so a shopper without an
+    // account can still reach their own cart and their own receipt.
     const pairs = jar
       .getAll()
-      .filter((c) => c.name === "bba_at" || c.name === "bba_rt")
+      .filter(
+        (c) =>
+          c.name === "bba_at" ||
+          c.name === "bba_rt" ||
+          c.name === "bba_cart" ||
+          c.name.startsWith("bba_order_"),
+      )
       .map((c) => `${c.name}=${c.value}`);
     if (pairs.length > 0) headers.cookie = pairs.join("; ");
   }

@@ -87,6 +87,9 @@ model User {
   verificationTokens VerificationToken[]
   authIdentities     AuthIdentity[]
   mfaRecoveryCodes   MfaRecoveryCode[]
+  carts              Cart[]
+  orders             Order[]
+  storeRelations     CustomerStoreRelation[]
 
   @@map("users")
 }
@@ -154,6 +157,9 @@ model Store {
   deliveryZones DeliveryZone[]
   categories    Category[]
   products      Product[]
+  carts             Cart[]
+  orders            Order[]
+  customerRelations CustomerStoreRelation[]
 
   @@map("stores")
 }
@@ -503,7 +509,9 @@ model ProductVariant {
   updatedAt      DateTime  @updatedAt @map("updated_at")
   deletedAt      DateTime? @map("deleted_at")
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stockLevel StockLevel?
+  cartItems  CartItem[]
 
   @@index([productId])
   @@index([storeId, barcode])
@@ -524,4 +532,280 @@ model ProductImage {
   @@unique([productId, position])
   @@index([storeId])
   @@map("product_images")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+/// Current stock state per variant. Derived from the movement ledger by a
+/// trigger — application code never writes `onHand` directly.
+model StockLevel {
+  variantId    String   @id @map("variant_id")
+  storeId      String   @map("store_id")
+  onHand       Int      @default(0) @map("on_hand")
+  /// Held for orders that are placed but not yet paid or fulfilled. Available
+  /// stock is `onHand - reserved`.
+  reserved     Int      @default(0)
+  reorderPoint Int?     @map("reorder_point")
+  reorderQty   Int?     @map("reorder_qty")
+  /// Off by default: a store selling made-to-order items should not have
+  /// checkout blocked by a count nobody maintains.
+  tracked      Boolean  @default(false)
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("stock_levels")
+}
+
+/// Append-only stock ledger. Grants withhold UPDATE and DELETE, and a trigger
+/// refuses them as well.
+model StockMovement {
+  id          String            @id @default(uuid())
+  storeId     String            @map("store_id")
+  variantId   String            @map("variant_id")
+  type        StockMovementType
+  qtyDelta    Int               @map("qty_delta")
+  reasonCode  String?           @map("reason_code")
+  note        String?
+  orderId     String?           @map("order_id")
+  actorUserId String?           @map("actor_user_id")
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  @@index([storeId, variantId, createdAt])
+  @@map("stock_movements")
+}
+
+enum StockMovementType {
+  RECEIVE
+  SALE
+  RETURN
+  ADJUSTMENT
+  DAMAGE
+  COUNT
+}
+
+// ---------------------------------------------------------------------------
+// Shopping
+// ---------------------------------------------------------------------------
+
+model Cart {
+  id         String     @id @default(uuid())
+  storeId    String     @map("store_id")
+  userId     String?    @map("user_id")
+  /// Set for guests instead of `userId`; exactly one of the two is present.
+  sessionKey String?    @map("session_key")
+  status     CartStatus @default(ACTIVE)
+  expiresAt  DateTime   @map("expires_at")
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  store Store      @relation(fields: [storeId], references: [id])
+  user  User?      @relation(fields: [userId], references: [id])
+  items CartItem[]
+
+  @@map("carts")
+}
+
+enum CartStatus {
+  ACTIVE
+  CONVERTED
+  ABANDONED
+}
+
+model CartItem {
+  id              String   @id @default(uuid())
+  cartId          String   @map("cart_id")
+  storeId         String   @map("store_id")
+  variantId       String   @map("variant_id")
+  qty             Int
+  /// What the shopper saw when adding. Display only — checkout re-quotes.
+  priceAtAddCents Int      @map("price_at_add_cents")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  cart    Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@unique([cartId, variantId])
+  @@map("cart_items")
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+/// Per-store counters, incremented inside the order transaction to produce
+/// human-readable order numbers without a global bottleneck.
+model StoreCounter {
+  storeId String @map("store_id")
+  key     String
+  value   BigInt @default(0)
+
+  @@id([storeId, key])
+  @@map("store_counters")
+}
+
+model Order {
+  id          String       @id @default(uuid())
+  storeId     String       @map("store_id")
+  orderNumber String       @map("order_number")
+  /// NULL for a walk-in POS sale with no account attached.
+  customerId  String?      @map("customer_id")
+  channel     OrderChannel @default(ONLINE)
+  fulfillment Fulfillment
+  status      OrderStatus  @default(PENDING)
+
+  subtotalCents    Int    @map("subtotal_cents")
+  discountCents    Int    @default(0) @map("discount_cents")
+  taxCents         Int    @default(0) @map("tax_cents")
+  deliveryFeeCents Int    @default(0) @map("delivery_fee_cents")
+  tipCents         Int    @default(0) @map("tip_cents")
+  totalCents       Int    @map("total_cents")
+  currency         String @default("USD")
+
+  /// Snapshot, not a reference: the receipt must still be correct after the
+  /// customer edits their address book.
+  deliveryAddress Json?   @map("delivery_address")
+  customerNote    String? @map("customer_note")
+  contactEmail    String? @map("contact_email")
+  contactPhone    String? @map("contact_phone")
+
+  /// Lets a guest reach their own order later without an account.
+  guestToken String? @map("guest_token")
+
+  /// Client-supplied retry key. Unique per store, so a double-clicked Place
+  /// Order returns the first order instead of creating a second.
+  idempotencyKey String? @map("idempotency_key")
+
+  placedAt  DateTime  @default(now()) @map("placed_at")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  store    Store                @relation(fields: [storeId], references: [id])
+  customer User?                @relation(fields: [customerId], references: [id])
+  items    OrderItem[]
+  history  OrderStatusHistory[]
+  payments Payment[]
+
+  @@unique([storeId, orderNumber])
+  @@index([storeId, status, placedAt])
+  @@index([customerId, placedAt])
+  @@map("orders")
+}
+
+enum OrderChannel {
+  ONLINE
+  POS
+}
+
+enum Fulfillment {
+  PICKUP
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  RETURNED
+  REFUNDED
+}
+
+/// Line snapshots. Deliberately denormalised so a receipt stays readable after
+/// the product is renamed, repriced or deleted.
+model OrderItem {
+  id             String  @id @default(uuid())
+  orderId        String  @map("order_id")
+  storeId        String  @map("store_id")
+  variantId      String? @map("variant_id")
+  productName    String  @map("product_name")
+  variantAttrs   Json    @default("{}") @map("variant_attrs")
+  sku            String?
+  unitPriceCents Int     @map("unit_price_cents")
+  qty            Int
+  lineTotalCents Int     @map("line_total_cents")
+  taxCents       Int     @default(0) @map("tax_cents")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(uuid())
+  orderId     String       @map("order_id")
+  storeId     String       @map("store_id")
+  fromStatus  OrderStatus? @map("from_status")
+  toStatus    OrderStatus  @map("to_status")
+  /// NULL means the system did it — the expiry sweeper or a webhook.
+  actorUserId String?      @map("actor_user_id")
+  note        String?
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model Payment {
+  id                    String          @id @default(uuid())
+  storeId               String          @map("store_id")
+  orderId               String          @map("order_id")
+  provider              PaymentProvider
+  stripePaymentIntentId String?         @map("stripe_payment_intent_id")
+  amountCents           Int             @map("amount_cents")
+  /// Always zero. The platform takes no cut of any sale.
+  applicationFeeCents   Int             @default(0) @map("application_fee_cents")
+  status                PaymentStatus
+  cashReceivedBy        String?         @map("cash_received_by")
+  cashReceivedAt        DateTime?       @map("cash_received_at")
+  failureReason         String?         @map("failure_reason")
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+enum PaymentProvider {
+  STRIPE
+  CASH
+}
+
+enum PaymentStatus {
+  REQUIRES_ACTION
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// A store's view of one of its customers. Maintained when an order confirms.
+model CustomerStoreRelation {
+  id                 String    @id @default(uuid())
+  storeId            String    @map("store_id")
+  userId             String    @map("user_id")
+  firstOrderAt       DateTime? @map("first_order_at")
+  orderCount         Int       @default(0) @map("order_count")
+  lifetimeSpendCents BigInt    @default(0) @map("lifetime_spend_cents")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  store Store @relation(fields: [storeId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([storeId, userId])
+  @@map("customer_store_relations")
 }

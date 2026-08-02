@@ -28,8 +28,10 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phase 2 (Auth & RBAC) complete. Phase 4 (Store management) API complete.**
-159 tests passing. `apps/web` is not started — everything below is API-only.
+**Phases 2, 4, 5 complete; Phase 7's revenue path (cart → checkout → order →
+counter sale) built and tested.** 292 tests passing. `apps/web` covers auth,
+the platform console, store settings, the public storefront, customer
+checkout, and the staff counter.
 
 ### Done
 
@@ -55,29 +57,162 @@ provisioning, lifecycle transitions, hours, tax rates, delivery zones with
 serviceability checks, branding with WCAG AA contrast validation, staff
 management, media upload pipeline, append-only audit log.
 
+**Catalog** — categories with a depth limit, products with variants and
+images, per-store SKU uniqueness, Postgres full-text search over name and
+brand, publish as a permission distinct from edit.
+
+**Storefront** — public store directory with trigram fuzzy search, per-store
+themed landing pages, category browsing, filtering and sorting, product detail,
+JSON-LD, sitemap and robots. Every read is anonymous and RLS-enforced.
+
+**Cart & checkout** — per-store carts for guests and signed-in shoppers,
+merged on sign-in; line revalidation against the live catalog; a quote engine
+with a `TaxProvider` seam; the order-creation transaction with stock
+reservation, per-store order numbers and idempotency; the order state machine
+with role-gated transitions; cash payment; the PENDING expiry sweeper.
+
+**Inventory (the checkout-critical part)** — `stock_levels` derived from an
+append-only `stock_movements` ledger, with reservation semantics. Receiving,
+count sessions and low-stock alerts belong to the inventory phase and are not
+built.
+
+**Order queue** — the staff screen. Orders grouped by what the shop has to do
+next rather than by time, one-tap status actions sized for a tablet, the order
+workbench with items, contact, payment and full history, and cash collection.
+Actions are derived from the same state machine the API enforces, so the UI
+never offers a button the server will refuse — a delivery driver sees "out for
+delivery" on a ready order and no cancel button at all.
+
+**Till (POS)** — walk-in sales. Barcode scan or typed SKU with a name-search
+fallback, a tap grid for shops without a scanner, cash tender with change, and
+a sale that lands as a completed, paid order. Stock leaves through the same
+ledger online orders use, so there is one path out of inventory rather than
+two that can disagree.
+
+**Print documents** — a receipt sized for an 80mm thermal roll and a pick list
+for whoever packs the bag. Plain black-on-white CSS: receipt printers are
+monochrome, so anything relying on colour or hairlines prints as mud.
+
+**Live queue (SSE)** — the staff queue updates itself as orders arrive and
+change, via a Server-Sent Events stream proxied through the BFF. Events carry
+no order contents: they only prompt a re-read, so the database stays the single
+authority and a duplicated or dropped event costs at most a redundant refresh.
+Falls back to 15-second polling after two failures, and says which mode it is
+in — a screen staff rely on has to admit when it has stopped updating.
+
+**Web** — Next.js App Router BFF: auth flows, the Super Admin console, store
+settings and staff management, the public storefront, the customer purchase
+flow (cart, checkout, receipt), the staff order queue, and the till.
+
 ### Not started
 
-- `apps/web` (Next.js) — all four route groups from plan §11.1
-- `apps/worker` — BullMQ; media processing and mail currently run inline
-- Phases 5–12: catalog, inventory, cart/checkout/orders, payments, delivery,
-  reporting, hardening, deployment
+- `apps/worker` — BullMQ; media processing and mail currently run inline, and
+  order events are an in-process bus rather than the outbox in plan §12.8 (see
+  `order-events.service.ts` for what that costs)
+- Coupons/promotions and catalog CSV import/export (rest of Phase 5)
+- Geocoding, so delivery addresses can be matched to a zone. Checkout says
+  plainly that it cannot place an address rather than guessing a fee.
+- Stripe (Phase 8). Checkout is deliberately cash-only for now, per the plan.
+- Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
+  deployment
 - OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
   logic underneath it is built and tested; only the provider round-trip is
   missing, and it needs real Google credentials to exercise.
 
 ## Things worth knowing before you change anything
 
-**`prisma.unscoped()` is almost always wrong.** Three separate bugs in Phase 2
+**The API must not connect as the schema owner.** `DATABASE_URL` is the
+migration identity and is typically a superuser; **superusers bypass RLS
+entirely**, even with `FORCE ROW LEVEL SECURITY`. The API ran on that
+connection for several phases, which meant every policy in the schema was
+switched off at runtime while the whole test suite passed — the tests connect
+as `bba_app` explicitly, so they were testing a configuration the server was
+not using. Nothing errors when this is wrong; queries just quietly return rows
+they should not. The runtime now uses `DATABASE_URL_APP` (see
+`infra/prisma/prisma.module.ts`) and refuses to boot without it outside
+development.
+
+To check a running server, ask it for a resource that RLS should hide — a
+guest order without its claim token should 404, not 200.
+
+**`prisma.unscoped()` is almost always wrong.** Four separate bugs so far have
 had the identical shape: a query written before anyone considered whose data it
 was, silently returning or affecting zero rows under RLS, with no exception.
-Two would have shipped as "login is impossible" and "no staff member has any
-permission". `src/infra/prisma/unscoped-usage.test.ts` confines it to files
+They would have shipped as "login is impossible", "no staff member has any
+permission", and an expiry sweeper that reported success while sweeping nothing
+and holding stock off the shelf forever. A cross-tenant job wants
+`withTenant({ isSuperAdmin: true })`, not `unscoped()`.
+`src/infra/prisma/unscoped-usage.test.ts` confines the escape hatch to files
 that genuinely need it — extend that list deliberately, with a reason.
 
 **`INSERT ... RETURNING` applies the SELECT policy.** Prisma always emits
 RETURNING, so `create()` fails on any row written where the writer cannot read
 it back — audit entries, invitation tokens with a null user, media rows. Use a
 raw INSERT for those. Widening the read policy instead would expose data.
+
+**The migration chain must rebuild the database from nothing.** It drifted
+once: a failed run left the ledger stuck, later migrations were applied by
+hand, and two migration files had a Prisma update-notice box captured into
+them by a redirect — so `migrate deploy` could not run at all while the dev
+database looked fine. Verify with a throwaway database rather than trusting
+the ledger:
+
+```bash
+createdb bba_check && DATABASE_URL="postgresql://$(whoami)@localhost:5432/bba_check?schema=public" npx prisma migrate deploy
+```
+
+Then diff it against dev. `prisma migrate diff` does not compare RLS policies
+or functions, which is where most of this schema's security lives — compare
+`pg_policies` and `pg_proc` directly.
+
+**`ON CONFLICT DO UPDATE` checks CHECK constraints before it detects the
+conflict.** The stock trigger originally upserted with
+`INSERT … ON CONFLICT (variant_id) DO UPDATE SET on_hand = on_hand + delta`.
+PostgreSQL evaluates the proposed row's CHECK constraints *before* the
+speculative insertion that finds the conflict, so every sale — a negative delta
+— failed `on_hand >= 0` against a row that would never have been stored. Update
+first, insert only `IF NOT FOUND`.
+
+**An SSE heartbeat must be an event, not a comment.** The stream originally
+sent `: ping` to keep proxies from closing it. That works for the socket and is
+useless to the client: `EventSource` never surfaces comment lines to
+JavaScript. When the API died mid-stream the browser went on reporting a
+healthy connection — the queue showed "Updating live" over data that had
+stopped moving, which is worse than showing nothing. The server now sends both
+a comment and a named `heartbeat` event, and the client treats silence longer
+than 60s as failure. Testing this needs a **foregrounded** tab: browsers
+throttle background timers hard, which is also why `visibilitychange` triggers
+its own liveness check.
+
+**Client-side money must round exactly like the server.** The till showed a
+running total by applying the tax rate to the subtotal, while the server
+applies it per line and sums. On some baskets those differ by a cent — the
+clerk reads "change $6.30", hands it over, and the receipt says $6.29. Any
+screen that displays a total before the server computes one has to use the
+same rounding, not merely an approximation of it (`ConfiguredRateTaxProvider`
+is the reference).
+
+**`GRANT` is additive; append-only needs `REVOKE`.** Migration 1 sets
+`ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE`, so every
+table created afterwards starts fully mutable by `bba_app` and a narrower
+`GRANT` in a later migration changes nothing. `audit_logs`, `stock_movements`
+and `order_status_history` each carry an explicit
+`REVOKE UPDATE, DELETE … FROM bba_app`. Enforce this at the grant level rather
+than with a trigger: a trigger also blocks the owner, which makes retention
+purges impossible.
+
+**A `FOR ALL` policy governs deletes, not just reads.** Adding a public branch
+to a `FOR ALL` policy's `USING` clause makes those rows publicly *deletable* —
+`USING` decides which rows an UPDATE or DELETE may touch, not only which rows
+are visible. Tables with public read access split it in two: a `FOR SELECT`
+policy carrying the public branch, and a `FOR ALL` write policy without it.
+`media_assets` was migrated to this shape in `00000000000009`.
+
+**Public visibility is three conditions, not one.** For media: not private,
+finished processing, and owned by a live store. Dropping any one of them
+publishes delivery proofs, unvalidated uploads, or a store that hasn't
+launched. An attach-time check cannot replace the policy — an asset can be
+rejected *after* it was attached to a live product.
 
 **Pre-identity reads go through SECURITY DEFINER functions.** Login, refresh,
 redeeming a mailed token, OAuth identity lookup, recovery codes. Each takes an
@@ -86,7 +221,24 @@ Adding a sixth deserves the scrutiny of widening an RLS policy.
 
 **Auth tests run as `bba_app`, not the superuser.** A superuser bypasses RLS
 entirely, so they would pass against a configuration that cannot work in
-production.
+production. The storefront tests do the same, with no identity set at all —
+that is the only way to prove what the public can actually see.
+
+**Tests must own globally unique slugs, and seed their own fixtures.** A
+fixture that collides with seeded data passes on an empty database and fails on
+a working one — storefront fixtures are prefixed `test-` for this reason. The
+opposite failure is worse: the isolation gate once depended on rows that
+existed only in one developer's database, so on a fresh clone its negative
+assertions ("store B is invisible") all passed while proving nothing. It now
+seeds its fixtures and asserts they exist before checking anything is hidden.
+
+**Media is served from the API origin, not the web origin.** `MEDIA_BASE_URL`
+is unset in development and the API serves `.storage/public` itself. Two
+things this depends on: the static mount points at `public/` specifically —
+mounting `.storage` would publish the sibling `private/` and `quarantine/`
+directories — and the route overrides helmet's `Cross-Origin-Resource-Policy`
+to `cross-origin`, without which the browser refuses to render every image
+while `curl` fetches them happily.
 
 ## Local development
 
@@ -101,8 +253,30 @@ Install and generate:
 
 ```bash
 npm install
-cd apps/api && cp .env.example .env && npx prisma generate
+cd apps/api && cp .env.example .env && npx prisma generate && npx prisma migrate deploy
 ```
+
+Seed a themed store with a catalog, tax rate, delivery zone, stock and a
+staff login, so both the storefront and the order queue have something real to
+work with. It prints the URLs and the sign-in it created:
+
+```bash
+cd apps/api && npm run seed:dev
+```
+
+Run both servers (the API first — the web app proxies to it):
+
+```bash
+npm run dev --workspace @bba/api
+```
+
+```bash
+npm run dev --workspace @bba/web
+```
+
+The storefront is then at `/stores` and the seeded shop at
+`/stores/morse-ave-bakery`. Sign in with the credentials the seed printed to
+reach that store's order queue and watch an order you place arrive in it.
 
 Run tests:
 
@@ -131,15 +305,14 @@ service containers, not a shared local install.
 
 ## Next steps (in order)
 
-1. **`apps/web`** — the Next.js app, per plan §11.1's four route groups. This is
-   the largest remaining gap: everything built so far is API-only, and the
-   platform review console and store settings UI are Phase 4 deliverables that
-   have no frontend yet.
-2. **Phase 5 (Catalog)** — categories, products, variants, public storefront
-   browsing with SEO. Depends on the media pipeline, which is done.
-3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+1. **Phase 8 (Payments)** — Stripe Connect. The payment row, the zero
+   application fee and the provider column are already in place.
+2. **Finish Phase 7** — POS walk-in sales and print documents, then SSE so the
+   queue updates without an action.
+3. **`docker-compose.yml`** — before a second developer or CI (see above).
+4. **Rest of Phase 5** — coupons and promotions, catalog CSV import/export.
+5. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-4. **`docker-compose.yml`** — before a second developer or CI (see above).
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

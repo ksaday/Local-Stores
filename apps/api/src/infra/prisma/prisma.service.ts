@@ -4,6 +4,10 @@ import { withTenantContext, type TenantContext } from "./tenant-context.js";
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  constructor(options?: ConstructorParameters<typeof PrismaClient>[0]) {
+    super(options);
+  }
+
   async onModuleInit(): Promise<void> {
     await this.$connect();
   }

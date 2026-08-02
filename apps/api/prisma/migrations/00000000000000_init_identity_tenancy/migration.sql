@@ -155,13 +155,3 @@ ALTER TABLE "store_memberships" ADD CONSTRAINT "store_memberships_user_id_fkey" 
 -- AddForeignKey
 ALTER TABLE "stores" ADD CONSTRAINT "stores_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
-┌─────────────────────────────────────────────────────────┐
-│  Update available 5.22.0 -> 7.9.1                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘

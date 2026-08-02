@@ -1,9 +1,11 @@
-import { Body, Controller, Get, HttpCode, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Logger, Post, Req, Res } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { CookieOptions, Response } from "express";
 import { z } from "zod";
 import { Public } from "../../common/decorators/public.decorator.js";
 import { zodBody } from "../../common/pipes/zod-validation.pipe.js";
+import { CART_COOKIE } from "../cart/cart.controller.js";
+import { CartService } from "../cart/cart.service.js";
 import { AppError } from "../../common/errors/app-error.js";
 import type { AuthenticatedRequest } from "../../common/guards/jwt-auth.guard.js";
 import type { Env } from "../../config/env.js";
@@ -41,10 +43,13 @@ const LoginSchema = z
 
 @Controller({ path: "auth", version: "1" })
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly auth: AuthService,
     private readonly mfa: MfaService,
     private readonly config: ConfigService<Env, true>,
+    private readonly cart: CartService,
   ) {}
 
   /** Always 202 with the same body, whether or not the address was already taken. */
@@ -75,6 +80,7 @@ export class AuthController {
     }
 
     this.setSessionCookies(res, outcome.session);
+    await this.adoptGuestCart(req, res, outcome.session.userId);
     return { status: "ok" };
   }
 
@@ -185,6 +191,35 @@ export class AuthController {
       sameSite: "lax",
       domain: this.config.get("COOKIE_DOMAIN", { infer: true }),
     };
+  }
+
+  /**
+   * Folds anything the shopper put in a basket before signing in into their
+   * account, then retires the guest key.
+   *
+   * Best-effort on purpose: a merge that fails must not fail the sign-in. The
+   * worst case is a shopper who has to re-add an item, which is a great deal
+   * better than being unable to log in.
+   */
+  private async adoptGuestCart(
+    req: AuthenticatedRequest,
+    res: Response,
+    userId: string,
+  ): Promise<void> {
+    const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies ?? {};
+    const sessionKey = cookies[CART_COOKIE];
+    if (!sessionKey) return;
+
+    try {
+      await this.cart.mergeGuestCart(sessionKey, userId);
+    } catch (err) {
+      this.logger.warn(`Could not merge guest cart on sign-in: ${String(err)}`);
+      return;
+    }
+
+    // The key is spent. Leaving it set would mean a later signed-out visit on
+    // this device resumed a cart that has already been absorbed.
+    res.clearCookie(CART_COOKIE, { path: "/" });
   }
 
   private setSessionCookies(res: Response, session: IssuedSession): void {

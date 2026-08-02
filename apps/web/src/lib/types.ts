@@ -28,6 +28,8 @@ export interface Store {
   state: string | null;
   postalCode: string | null;
   branding: Record<string, unknown>;
+  /** ISO 4217. Money is always rendered in the store's own currency. */
+  currency: string;
   stripeChargesEnabled: boolean;
   cashEnabled: boolean;
   createdAt: string;

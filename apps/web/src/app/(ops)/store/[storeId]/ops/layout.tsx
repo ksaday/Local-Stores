@@ -33,7 +33,11 @@ export default async function OpsLayout({
     <AppShell
       eyebrow="Store"
       title={store.name}
+      // Orders first: it is the screen staff live in all day, and the one
+      // they need to reach without thinking.
       nav={[
+        { href: `${base}/orders`, label: "Orders" },
+        { href: `${base}/till`, label: "Till" },
         { href: `${base}/settings`, label: "Settings" },
         { href: `${base}/staff`, label: "Team" },
       ]}

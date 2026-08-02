@@ -16,7 +16,11 @@ import { MediaService } from "./media.service.js";
         // is a provider change, not a rewrite of the upload pipeline.
         new LocalDiskStorage(
           join(process.cwd(), ".storage"),
-          `${config.get("WEB_ORIGIN", { infer: true })}/media`,
+          config.get("MEDIA_BASE_URL", { infer: true }) ??
+            // The files are written next to the API, so the API serves them in
+            // development. Pointing this at the web origin produces URLs that
+            // 404 — nothing over there reads this directory.
+            `http://localhost:${config.get("PORT", { infer: true })}/media`,
         ),
     },
     MediaService,

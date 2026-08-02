@@ -2,6 +2,8 @@ import "reflect-metadata";
 import { Logger, VersioningType } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
+import { join } from "node:path";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { AppModule } from "./app.module.js";
@@ -10,7 +12,9 @@ import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-enve
 import type { Env } from "./config/env.js";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
   const config = app.get(ConfigService<Env, true>);
 
   app.use(helmet());
@@ -24,6 +28,35 @@ async function bootstrap(): Promise<void> {
     credentials: true,
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   });
+
+  // Uploaded media, served straight from disk in development.
+  //
+  // Mounted on `.storage/public` specifically, never on `.storage` itself:
+  // the sibling `private/` directory holds delivery proofs and signatures, and
+  // `quarantine/` holds files that have not yet passed validation. Serving the
+  // parent would publish both.
+  //
+  // In production MEDIA_BASE_URL points at the CDN and this route goes unused.
+  if (!config.get("MEDIA_BASE_URL")) {
+    app.useStaticAssets(join(process.cwd(), ".storage", "public"), {
+      prefix: "/media/public",
+      index: false,
+      // These are content-addressed by a server-generated UUID key, so a given
+      // URL's bytes never change.
+      maxAge: "1y",
+      immutable: true,
+      setHeaders: (res) => {
+        // A stored file must be rendered as its declared type or downloaded —
+        // never sniffed into something executable.
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        // Helmet's default same-origin CORP would stop the storefront from
+        // embedding these, since the web app and the media origin differ in
+        // every environment. Relaxed here only: these are public,
+        // already-validated images whose whole purpose is to be embedded.
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      },
+    });
+  }
 
   app.setGlobalPrefix("api");
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });

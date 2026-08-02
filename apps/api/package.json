@@ -12,7 +12,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "test": "vitest run",
-    "test:isolation": "vitest run tenant-isolation"
+    "test:isolation": "vitest run tenant-isolation",
+    "seed:dev": "tsx prisma/seed-dev.ts"
   },
   "dependencies": {
     "@bba/shared": "*",
@@ -41,6 +42,7 @@
     "@types/supertest": "^7.2.1",
     "prisma": "^5.22.0",
     "supertest": "^7.2.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.0",
     "unplugin-swc": "^1.5.9",
     "vitest": "^2.1.9"

@@ -14,6 +14,19 @@ export function StatusBadge({ status }: { status: string }) {
     CLOSED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
     REJECTED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
     INVITED: "bg-amber-50 text-amber-800 ring-amber-200",
+
+    // Order statuses. Amber means someone needs to act, blue means work is
+    // under way, green means done, grey means it ended without a sale — a
+    // clerk should be able to read the queue by colour from across a counter.
+    CONFIRMED: "bg-sky-50 text-sky-800 ring-sky-200",
+    PREPARING: "bg-sky-50 text-sky-800 ring-sky-200",
+    READY: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+    OUT_FOR_DELIVERY: "bg-sky-50 text-sky-800 ring-sky-200",
+    PICKED_UP: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+    DELIVERED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+    CANCELLED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+    RETURNED: "bg-amber-50 text-amber-800 ring-amber-200",
+    REFUNDED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
   };
 
   return (

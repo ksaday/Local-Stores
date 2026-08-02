@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { api } from "@/lib/api";
-import { Card, EmptyState, StatusBadge } from "@/components/shell";
+import { Card, EmptyState } from "@/components/shell";
 import type { StoreApplication } from "@/lib/types";
 import { LifecycleActions } from "./lifecycle-actions";
 

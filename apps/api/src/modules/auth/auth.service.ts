@@ -11,6 +11,8 @@ import { PasswordService } from "./password.service.js";
 import { hashRefreshToken, TokenService, type MembershipClaim } from "./token.service.js";
 
 export interface IssuedSession {
+  /** Who the session belongs to. Callers need it without re-parsing the JWT. */
+  userId: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: Date;
@@ -267,11 +269,11 @@ export class AuthService {
           },
         });
 
-        return { accessToken: access, refreshToken: token, expiresAt: expires };
+        return { userId, accessToken: access, refreshToken: token, expiresAt: expires };
       },
     );
 
-    return { accessToken, refreshToken, expiresAt };
+    return { userId, accessToken, refreshToken, expiresAt };
   }
 }
 

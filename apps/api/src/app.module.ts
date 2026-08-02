@@ -7,8 +7,13 @@ import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
+import { CartModule } from "./modules/cart/cart.module.js";
 import { CatalogModule } from "./modules/catalog/catalog.module.js";
+import { CheckoutModule } from "./modules/checkout/checkout.module.js";
+import { OrderEventsModule } from "./modules/orders/order-events.module.js";
+import { OrdersModule } from "./modules/orders/orders.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
+import { StorefrontModule } from "./modules/storefront/storefront.module.js";
 import { StoresModule } from "./modules/stores/stores.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard.js";
@@ -30,6 +35,11 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     AuthModule,
     StoresModule,
     CatalogModule,
+    StorefrontModule,
+    OrderEventsModule,
+    CartModule,
+    CheckoutModule,
+    OrdersModule,
     HealthModule,
   ],
   providers: [

@@ -16,26 +16,28 @@ export default async function HomePage() {
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">
+        {/* Browsing is the point of the site and needs no account, so it leads
+            regardless of whether anyone is signed in. */}
+        <Link
+          href="/stores"
+          className="rounded-card bg-brand px-5 py-2.5 text-sm font-medium text-brand-ink"
+        >
+          Browse local stores
+        </Link>
         {user ? (
           <Link
             href="/account"
-            className="rounded-card bg-brand px-5 py-2.5 text-sm font-medium text-brand-ink"
+            className="rounded-card border border-line px-5 py-2.5 text-sm font-medium text-ink"
           >
-            Go to your account
+            Your account
           </Link>
         ) : (
           <>
             <Link
               href="/signin"
-              className="rounded-card bg-brand px-5 py-2.5 text-sm font-medium text-brand-ink"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/signup"
               className="rounded-card border border-line px-5 py-2.5 text-sm font-medium text-ink"
             >
-              Create an account
+              Sign in
             </Link>
           </>
         )}

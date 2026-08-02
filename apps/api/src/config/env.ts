@@ -45,6 +45,16 @@ const envSchema = z.object({
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
 
   /**
+   * Public base URL for uploaded media.
+   *
+   * Defaults to this API, which serves `.storage/public` in development. In
+   * production this points at the CDN in front of the object store, and the
+   * API stops serving files entirely. It must NOT default to WEB_ORIGIN — the
+   * files live next to the API, and the web app has no route that serves them.
+   */
+  MEDIA_BASE_URL: z.string().url().optional(),
+
+  /**
    * Key material for encrypting TOTP secrets at rest. Any length — it is
    * SHA-256 derived before use. In production this comes from Secrets Manager.
    */

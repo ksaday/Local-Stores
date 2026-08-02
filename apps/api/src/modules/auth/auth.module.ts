@@ -1,4 +1,5 @@
 import { Global, Module } from "@nestjs/common";
+import { CartModule } from "../cart/cart.module.js";
 import { AccountController } from "./account.controller.js";
 import { AccountService } from "./account.service.js";
 import { AuthController } from "./auth.controller.js";
@@ -20,6 +21,9 @@ import { VerificationTokenService } from "./verification-token.service.js";
  */
 @Global()
 @Module({
+  // CartModule so sign-in can adopt a guest's basket. AuthModule is @Global
+  // and CartModule is not, which is fine — the dependency runs this way only.
+  imports: [CartModule],
   controllers: [AuthController, AccountController, InvitationController],
   providers: [
     AuthService,
