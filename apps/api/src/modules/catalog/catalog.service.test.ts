@@ -63,6 +63,7 @@ async function cleanup(): Promise<void> {
     await admin.$executeRaw`DELETE FROM products WHERE store_id = ANY(${stores})`;
     await admin.$executeRaw`DELETE FROM categories WHERE store_id = ANY(${stores})`;
     await admin.$executeRaw`DELETE FROM media_assets WHERE store_id = ANY(${stores})`;
+    await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
     await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
     await admin.$executeRaw`DELETE FROM users WHERE id = ${OWNER}`;
   });

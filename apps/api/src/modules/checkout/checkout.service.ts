@@ -4,7 +4,7 @@ import { AppError } from "../../common/errors/app-error.js";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { Shopper } from "../cart/cart.service.js";
-import { OrderEventsService } from "../orders/order-events.service.js";
+import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { TaxProvider } from "./tax.provider.js";
 
 export type Fulfillment = "PICKUP" | "DELIVERY";
@@ -70,7 +70,7 @@ export class CheckoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tax: TaxProvider,
-    private readonly events: OrderEventsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /**
@@ -149,19 +149,7 @@ export class CheckoutService {
     const userId = shopper.kind === "user" ? shopper.userId : undefined;
 
     try {
-      const order = await this.createOrder(storeId, shopper, request, cartId, userId, store);
-
-      // After commit: the clerk's queue must never be told about an order that
-      // then rolls back.
-      this.events.emit({
-        type: "order.created",
-        storeId,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        status: order.status,
-      });
-
-      return order;
+      return await this.createOrder(storeId, shopper, request, cartId, userId, store);
     } catch (err) {
       // Two retries can both pass the pre-check above and race into the
       // transaction. The unique index decides; the loser returns the winner's
@@ -336,6 +324,16 @@ export class CheckoutService {
       // 7. Retire the cart. Marked converted rather than deleted so the order
       //    can be traced back to what the shopper actually assembled.
       await tx.$executeRaw`UPDATE carts SET status = 'CONVERTED', updated_at = now() WHERE id = ${cartId}`;
+
+      // Written inside the transaction, not after it. The event and the order
+      // commit together, so the queue can never be told about an order that
+      // rolled back — and can never miss one that didn't.
+      await this.outbox.emitIn(tx, {
+        type: "order.created",
+        storeId,
+        aggregateId: orderId,
+        payload: { orderId, orderNumber, status: "PENDING" },
+      });
 
       this.logger.log(`Order ${orderNumber} placed for store ${storeId}`);
 

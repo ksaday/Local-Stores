@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { CartService, type Shopper } from "../cart/cart.service.js";
-import { OrderEventsService } from "../orders/order-events.service.js";
+import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { CheckoutService } from "./checkout.service.js";
 import { ConfiguredRateTaxProvider } from "./tax.provider.js";
@@ -31,13 +31,13 @@ const TAX_BPS = 1025;
 beforeAll(() => {
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   cart = new CartService(prisma);
-  const events = new OrderEventsService();
+  const outbox = new OutboxService(prisma);
   checkout = new CheckoutService(
     prisma,
     new ConfiguredRateTaxProvider(async () => ({ rateBps: TAX_BPS, name: "IL sales tax" })),
-    events,
+    outbox,
   );
-  orders = new OrdersService(prisma, new AuditService(prisma), events);
+  orders = new OrdersService(prisma, new AuditService(prisma), outbox);
 });
 
 afterAll(async () => {
@@ -114,6 +114,7 @@ async function cleanup(): Promise<void> {
     await db.$executeRaw`DELETE FROM tax_rates WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM products WHERE store_id = ${STORE}`;
+    await db.$executeRaw`DELETE FROM outbox_events WHERE store_id = ${STORE}`;
     await db.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
     await db.$executeRaw`DELETE FROM users WHERE id IN (${OWNER}, ${BUYER})`;
   });

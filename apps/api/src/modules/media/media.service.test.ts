@@ -67,6 +67,7 @@ async function cleanup(): Promise<void> {
   await asAdmin(async (admin) => {
     await admin.$executeRaw`DELETE FROM audit_logs WHERE entity_type = 'media_asset'`;
     await admin.$executeRaw`DELETE FROM media_assets WHERE store_id = ${STORE}`;
+    await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ${STORE}`;
     await admin.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
     await admin.$executeRaw`DELETE FROM users WHERE id = ${OWNER}`;
   });

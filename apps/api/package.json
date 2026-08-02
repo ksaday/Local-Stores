@@ -13,7 +13,9 @@
     "prisma:studio": "prisma studio",
     "test": "vitest run",
     "test:isolation": "vitest run tenant-isolation",
-    "seed:dev": "tsx prisma/seed-dev.ts"
+    "seed:dev": "tsx prisma/seed-dev.ts",
+    "worker": "node dist/worker/main.js",
+    "worker:dev": "node --watch dist/worker/main.js"
   },
   "dependencies": {
     "@bba/shared": "*",
@@ -26,6 +28,7 @@
     "cookie-parser": "^1.4.7",
     "file-type": "^21.3.4",
     "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
     "jose": "^6.2.5",
     "otpauth": "^9.5.1",
     "reflect-metadata": "^0.2.2",

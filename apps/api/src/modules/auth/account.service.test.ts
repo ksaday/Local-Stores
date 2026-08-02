@@ -102,6 +102,7 @@ async function cleanup(): Promise<void> {
     const emails = [USER_EMAIL, INVITEE_EMAIL, "account-owner@example.com"];
     await admin.$executeRaw`DELETE FROM verification_tokens WHERE email = ANY(${emails}::citext[])`;
     await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ${STORE}`;
+    await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ${STORE}`;
     await admin.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
     await admin.$executeRaw`
       DELETE FROM refresh_tokens WHERE user_id IN (

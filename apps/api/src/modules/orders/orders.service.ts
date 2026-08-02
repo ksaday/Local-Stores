@@ -10,7 +10,7 @@ import {
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
-import { OrderEventsService } from "./order-events.service.js";
+import { OutboxService } from "../../infra/outbox/outbox.service.js";
 
 export interface OrderListFilters {
   status?: OrderStatus;
@@ -27,7 +27,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly events: OrderEventsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /** The store's order queue. */
@@ -198,22 +198,19 @@ export class OrdersService {
                   ${actor.userId}, ${note ?? null})
         `;
 
+        // Inside the transaction: the status change and the notice of it
+        // commit together or not at all.
+        await this.outbox.emitIn(tx, {
+          type: "order.status_changed",
+          storeId,
+          aggregateId: orderId,
+          payload: { orderId, orderNumber: current.orderNumber, status: to, from },
+        });
+
         this.logger.log(`Order ${orderId}: ${from} -> ${to} by ${actor.userId}`);
         return { id: orderId, status: to, unchanged: false, orderNumber: current.orderNumber };
       },
     );
-
-    // Emitted after commit, never inside the transaction: a subscriber told
-    // about a change that then rolls back shows staff work that doesn't exist.
-    if (!result.unchanged) {
-      this.events.emit({
-        type: "order.status_changed",
-        storeId,
-        orderId,
-        orderNumber: result.orderNumber ?? "",
-        status: to,
-      });
-    }
 
     return result;
   }
@@ -336,6 +333,13 @@ export class OrdersService {
         after: { orderId, amountCents: payment.amount_cents },
       });
 
+      await this.outbox.emitIn(tx, {
+        type: "order.payment_recorded",
+        storeId,
+        aggregateId: orderId,
+        payload: { orderId, orderNumber: payment.order_number, amountCents: payment.amount_cents },
+      });
+
       return {
         paymentId: payment.id,
         amountCents: payment.amount_cents,
@@ -343,16 +347,6 @@ export class OrdersService {
         orderNumber: payment.order_number,
       };
     });
-
-    if (!result.alreadyRecorded) {
-      this.events.emit({
-        type: "order.payment_recorded",
-        storeId,
-        orderId,
-        orderNumber: result.orderNumber ?? "",
-        status: "PAID",
-      });
-    }
 
     return result;
   }

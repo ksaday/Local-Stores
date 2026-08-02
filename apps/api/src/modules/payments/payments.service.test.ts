@@ -5,7 +5,7 @@ import { AuditService } from "../audit/audit.service.js";
 import { CartService, type Shopper } from "../cart/cart.service.js";
 import { CheckoutService } from "../checkout/checkout.service.js";
 import { ConfiguredRateTaxProvider } from "../checkout/tax.provider.js";
-import { OrderEventsService } from "../orders/order-events.service.js";
+import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { PaymentsService } from "./payments.service.js";
 import { StripeWebhooksService } from "./webhooks.service.js";
@@ -48,12 +48,12 @@ beforeEach(async () => {
 
   provider = new FakePaymentProvider();
   const audit = new AuditService(prisma);
-  const events = new OrderEventsService();
+  const outbox = new OutboxService(prisma);
   payments = new PaymentsService(prisma, provider, audit);
-  orders = new OrdersService(prisma, audit, events);
+  orders = new OrdersService(prisma, audit, outbox);
   webhooks = new StripeWebhooksService(prisma, provider, orders);
   cart = new CartService(prisma);
-  checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), events);
+  checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox);
 });
 
 async function asAdmin<T>(work: (db: PrismaService) => Promise<T>): Promise<T> {
@@ -118,6 +118,7 @@ async function cleanup(): Promise<void> {
     await db.$executeRaw`DELETE FROM stock_levels WHERE store_id = ANY(${stores})`;
     await db.$executeRaw`DELETE FROM product_variants WHERE store_id = ANY(${stores})`;
     await db.$executeRaw`DELETE FROM products WHERE store_id = ANY(${stores})`;
+    await db.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
     await db.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
     await db.$executeRaw`DELETE FROM users WHERE id IN (${OWNER_A},${OWNER_B},${BUYER},${STAFF})`;
   });

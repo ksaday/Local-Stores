@@ -869,3 +869,24 @@ enum RefundStatus {
   SUCCEEDED
   FAILED
 }
+
+/// Transactional outbox (plan §12.8).
+///
+/// Written inside the transaction that caused the event, so an event can never
+/// describe a change that rolled back. A relay in `apps/worker` publishes
+/// unpublished rows in id order and marks them.
+model OutboxEvent {
+  id          BigInt    @id @default(autoincrement())
+  type        String
+  storeId     String?   @map("store_id")
+  aggregateId String?   @map("aggregate_id")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at")
+  publishedAt DateTime? @map("published_at")
+  /// Counted so a poisonous event can be parked rather than blocking the relay.
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error")
+
+  @@index([storeId, createdAt])
+  @@map("outbox_events")
+}

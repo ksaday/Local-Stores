@@ -205,7 +205,8 @@ async function cleanupWith(admin: PrismaService): Promise<void> {
     WHERE membership_id IN (SELECT id FROM store_memberships WHERE store_id = ANY(${stores}))
   `;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
-  await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
+    await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM refresh_tokens WHERE user_id = ANY(${users})`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${users})`;
 }

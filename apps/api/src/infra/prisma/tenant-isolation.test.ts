@@ -74,7 +74,8 @@ async function teardown(): Promise<void> {
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
-  await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
+    await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${[OWNER_A, OWNER_B]})`;
 }
 

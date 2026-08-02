@@ -19,24 +19,19 @@ export interface OrderEvent {
 type Listener = (event: OrderEvent) => void;
 
 /**
- * In-process pub/sub for order activity, feeding the staff SSE stream.
+ * Per-process fan-out to whichever SSE clients this instance is holding.
  *
- * **This is deliberately not the design in plan §12.8.** That calls for domain
- * events written to an `outbox_events` table inside the transaction, relayed
- * by a worker — which survives a process restart and works across instances.
- * `apps/worker` does not exist yet, so this carries the same event shapes
- * in-memory, behind an interface the relay can take over.
+ * Deliberately narrow: it does not decide *what* happened, only who to tell.
+ * Events reach it from `OrderEventsBridge`, which subscribes to Redis, which
+ * the worker's relay publishes to from the transactional outbox (plan §12.8).
+ * That chain is what makes the live queue correct across instances and across
+ * restarts — an event is written in the same transaction as the change, so it
+ * cannot be lost or describe something that rolled back.
  *
- * What that costs today, stated plainly so nobody discovers it in production:
- *
- * - **Single instance only.** Two API processes behind a load balancer would
- *   each see only their own writes, so a clerk connected to instance A would
- *   miss an order confirmed on instance B.
- * - **Nothing survives a restart.** The replay buffer is memory.
- *
- * Neither breaks correctness — the queue is authoritative from the database on
- * every render, and the stream only ever prompts a refresh. The failure mode is
- * a stale screen until the next action or the polling fallback, not wrong data.
+ * The replay buffer here is still memory, and deliberately so: it exists to
+ * cover a client's brief reconnect, not to be a durable log. The outbox is the
+ * durable log. A client that has fallen further behind than the buffer simply
+ * re-reads the queue, which is what these events prompt anyway.
  */
 @Injectable()
 export class OrderEventsService {

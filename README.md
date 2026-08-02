@@ -28,9 +28,9 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phases 2, 4, 5, 7 and 8 complete.** 345 tests passing. A shop can list
-products, take an order online or over the counter, work the queue, take cash
-or card, refund, and print a receipt.
+**Phases 2, 4, 5, 7 and 8 complete; the worker and transactional outbox are
+in.** 356 tests passing. A shop can list products, take an order online or over
+the counter, work the queue, take cash or card, refund, and print a receipt.
 
 ### Done
 
@@ -108,6 +108,15 @@ through the account that took the original payment, are written PENDING and
 confirmed by webhook, and a database trigger refuses any that would exceed what
 was captured. Cash works whether or not Stripe is configured.
 
+**Worker & outbox** — a second entrypoint on the same codebase
+(`npm run worker`), importing the API's domain services so business rules live
+in one place. Domain events are written to `outbox_events` *inside* the
+transaction that caused them; a relay publishes them to Redis in id order,
+exactly once, and every API instance fans them out to its own SSE clients.
+That is what makes the live queue correct with more than one API process and
+across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
+and a dead-letter check (5m).
+
 **Web** — Next.js App Router BFF: auth flows, the Super Admin console, store
 settings and staff management, the public storefront, the customer purchase
 flow (cart, checkout, card payment, receipt), the staff order queue, and the
@@ -115,9 +124,12 @@ till.
 
 ### Not started
 
-- `apps/worker` — BullMQ; media processing and mail currently run inline, and
-  order events are an in-process bus rather than the outbox in plan §12.8 (see
-  `order-events.service.ts` for what that costs)
+- BullMQ queues. The outbox and the scheduler are in, but media processing and
+  mail still run inline in the API request. Both should move to the worker,
+  which is what BullMQ's retries and dead-lettering are actually for.
+- A distributed lock on scheduled jobs. Two workers would each run the expiry
+  sweep; that is currently harmless only because every job is idempotent, and
+  it must be fixed before running a second worker.
 - Coupons/promotions and catalog CSV import/export (rest of Phase 5)
 - Geocoding, so delivery addresses can be matched to a zone. Checkout says
   plainly that it cannot place an address rather than guessing a fee.
@@ -286,6 +298,13 @@ brew services start postgresql@16
 brew services start redis
 ```
 
+If the Redis service refuses to start (`launchctl bootstrap ... exited with 5`),
+run it in the foreground instead — the app only needs the port:
+
+```bash
+redis-server --port 6379
+```
+
 Install and generate:
 
 ```bash
@@ -301,7 +320,8 @@ work with. It prints the URLs and the sign-in it created:
 cd apps/api && npm run seed:dev
 ```
 
-Run both servers (the API first — the web app proxies to it):
+Run all three (the API first — the web app proxies to it, and the worker is
+what carries live order updates to staff screens):
 
 ```bash
 npm run dev --workspace @bba/api
@@ -310,6 +330,14 @@ npm run dev --workspace @bba/api
 ```bash
 npm run dev --workspace @bba/web
 ```
+
+```bash
+npm run worker --workspace @bba/api
+```
+
+Without the worker everything still functions, but the order queue stops
+updating by itself and PENDING orders never expire — events pile up unpublished
+in `outbox_events` and go out when it next starts.
 
 The storefront is then at `/stores` and the seeded shop at
 `/stores/morse-ave-bakery`. Sign in with the credentials the seed printed to
@@ -356,9 +384,9 @@ service containers, not a shared local install.
    tested against a fake provider, and signature verification is proven with a
    genuine HMAC — but nothing has yet talked to Stripe. Walk one order through
    onboarding → card → refund before trusting it.
-2. **`apps/worker`** — the event outbox (§12.8) and the PENDING expiry sweeper
-   need a process to run in. Order events are in-process today, so the live
-   queue is single-instance only.
+2. **Move mail and media processing onto the worker.** Both run inline in the
+   API request today; a slow image resize blocks a response that should have
+   returned already.
 3. **Stripe Billing** — the $49/month subscription. Customer payments work;
    charging stores does not exist.
 4. **`docker-compose.yml`** — before a second developer or CI (see above).

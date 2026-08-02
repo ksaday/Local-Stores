@@ -5,7 +5,7 @@ import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { TaxProvider } from "../checkout/tax.provider.js";
-import { OrderEventsService } from "./order-events.service.js";
+import { OutboxService } from "../../infra/outbox/outbox.service.js";
 
 export interface PosLineInput {
   variantId: string;
@@ -29,7 +29,7 @@ export class PosService {
     private readonly prisma: PrismaService,
     private readonly tax: TaxProvider,
     private readonly audit: AuditService,
-    private readonly events: OrderEventsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /**
@@ -118,17 +118,7 @@ export class PosService {
     if (!store) throw AppError.notFound();
 
     try {
-      const sale = await this.createSale(storeId, actorUserId, input, store);
-
-      this.events.emit({
-        type: "order.created",
-        storeId,
-        orderId: sale.id,
-        orderNumber: sale.orderNumber,
-        status: "PICKED_UP",
-      });
-
-      return sale;
+      return await this.createSale(storeId, actorUserId, input, store);
     } catch (err) {
       if (isUniqueViolation(err)) {
         const created = await this.findByIdempotencyKey(storeId, input.idempotencyKey);
@@ -284,6 +274,13 @@ export class PosService {
         entityType: "order",
         entityId: orderId,
         after: { orderNumber, totalCents },
+      });
+
+      await this.outbox.emitIn(tx, {
+        type: "order.created",
+        storeId,
+        aggregateId: orderId,
+        payload: { orderId, orderNumber, status: "PICKED_UP", channel: "POS" },
       });
 
       this.logger.log(`Counter sale ${orderNumber} rung up by ${actorUserId}`);
