@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
+import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { TenantContext } from "../../infra/prisma/tenant-context.js";
 
@@ -414,6 +415,3 @@ function assertQty(qty: number): void {
   }
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: string }).code === "P2002";
-}

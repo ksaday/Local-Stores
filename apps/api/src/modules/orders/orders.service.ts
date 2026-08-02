@@ -118,7 +118,17 @@ export class OrdersService {
           include: {
             items: true,
             history: { orderBy: { createdAt: "asc" }, select: { toStatus: true, createdAt: true, note: true } },
-            store: { select: { slug: true, name: true, addressLine1: true, city: true, state: true } },
+            // Enough for the receipt to offer payment: whether this shop takes
+            // cards at all, and its palette so the card form matches.
+            store: {
+              select: {
+                id: true, slug: true, name: true, addressLine1: true, city: true, state: true,
+                cashEnabled: true, stripeChargesEnabled: true, branding: true,
+              },
+            },
+            // Status only — no provider ids or intent secrets on a page a
+            // guest can open with a link.
+            payments: { select: { provider: true, status: true, amountCents: true } },
           },
         }),
     );

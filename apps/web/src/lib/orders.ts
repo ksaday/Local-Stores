@@ -156,3 +156,27 @@ export function roleInStore(
 export function formatMoney(cents: number, currency: string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
 }
+
+export interface StoreRefund {
+  id: string;
+  amountCents: number;
+  status: string;
+  reasonCode: string | null;
+  createdAt: string;
+}
+
+/** Refunds against one order. Never cached — money state must be current. */
+export async function listRefunds(storeId: string, orderId: string): Promise<StoreRefund[]> {
+  const rows = await api<
+    { id: string; amount_cents: number; status: string; reason_code: string | null; created_at: string }[]
+  >(`/stores/${storeId}/payments/orders/${orderId}/refunds`, { revalidate: false });
+
+  // The API returns these from a raw query, so the keys are snake_case.
+  return rows.map((r) => ({
+    id: r.id,
+    amountCents: r.amount_cents,
+    status: r.status,
+    reasonCode: r.reason_code,
+    createdAt: r.created_at,
+  }));
+}

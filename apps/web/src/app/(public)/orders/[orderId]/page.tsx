@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ApiError, api } from "@/lib/api";
+import { PayPanel } from "./pay-panel";
 
 export const metadata: Metadata = { title: "Your order" };
 
@@ -24,7 +25,18 @@ interface OrderDetail {
   placedAt: string;
   items: { id: string; productName: string; qty: number; lineTotalCents: number }[];
   history: { toStatus: string; createdAt: string; note: string | null }[];
-  store: { slug: string; name: string; addressLine1: string | null; city: string | null; state: string | null };
+  store: {
+    id: string;
+    slug: string;
+    name: string;
+    addressLine1: string | null;
+    city: string | null;
+    state: string | null;
+    cashEnabled: boolean;
+    stripeChargesEnabled: boolean;
+    branding: { theme?: { primary?: string; background?: string; text?: string } } | null;
+  };
+  payments: { provider: string; status: string; amountCents: number }[];
 }
 
 const STATUS_COPY: Record<string, string> = {
@@ -52,6 +64,12 @@ export default async function OrderPage({ params }: { params: Promise<{ orderId:
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
   }
+
+  // Anything not yet SUCCEEDED still needs paying. A FAILED card attempt
+  // leaves the order outstanding on purpose, so the customer can try again.
+  const outstanding =
+    !order.payments.some((p) => p.status === "SUCCEEDED") &&
+    !["CANCELLED", "REFUNDED"].includes(order.status);
 
   const money = (cents: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: order.currency }).format(cents / 100);
@@ -109,9 +127,26 @@ export default async function OrderPage({ params }: { params: Promise<{ orderId:
             </p>
           )
         )}
-        <p className="mt-3 text-ink-muted">
-          Pay in person. Card payments are coming soon.
-        </p>
+        {outstanding ? (
+          <div className="mt-3">
+            <p className="text-ink">
+              {order.store.stripeChargesEnabled
+                ? "This order hasn't been paid yet."
+                : "Pay in person when you collect."}
+            </p>
+            {order.store.stripeChargesEnabled && (
+              <PayPanel
+                storeId={order.store.id}
+                orderId={order.id}
+                amountLabel={money(order.totalCents)}
+                cashEnabled={order.store.cashEnabled}
+                theme={order.store.branding?.theme}
+              />
+            )}
+          </div>
+        ) : (
+          <p className="mt-3 text-ink-muted">Paid in full. Thank you.</p>
+        )}
       </section>
 
       {order.history.length > 1 && (

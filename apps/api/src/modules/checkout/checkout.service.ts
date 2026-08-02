@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
+import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { Shopper } from "../cart/cart.service.js";
 import { OrderEventsService } from "../orders/order-events.service.js";
@@ -610,12 +611,6 @@ function normalizeTip(tipCents: number | undefined, subtotalCents: number): numb
   return tipCents;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: string }).code;
-  // P2002 from the Prisma client, 23505 from a raw INSERT.
-  return code === "P2002" || code === "23505";
-}
 
 /** Great-circle distance in metres. */
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {

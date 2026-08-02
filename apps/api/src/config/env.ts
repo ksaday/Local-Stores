@@ -60,6 +60,20 @@ const envSchema = z.object({
    */
   MFA_ENCRYPTION_KEY: z.string().min(16).default("dev-only-mfa-key-change-in-production"),
 
+  /**
+   * Stripe. Optional so the app runs without payments configured — a store can
+   * still take cash, which is the entire Phase 7 experience. When absent, card
+   * checkout is not offered rather than failing at the point of payment.
+   */
+  STRIPE_SECRET_KEY: z.string().startsWith("sk_").optional(),
+  STRIPE_PUBLISHABLE_KEY: z.string().startsWith("pk_").optional(),
+  /**
+   * Verifies that a webhook really came from Stripe. Without it any caller who
+   * finds the endpoint could mark orders paid, so the handler refuses every
+   * request when this is unset rather than trusting the body.
+   */
+  STRIPE_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
+
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
 

@@ -8,9 +8,11 @@ import {
   allowedTransitions,
   formatMoney,
   getStoreOrder,
+  listRefunds,
   roleInStore,
 } from "@/lib/orders";
 import { CollectCashButton, OrderActions } from "../order-actions";
+import { RefundPanel } from "./refund-panel";
 
 export const metadata: Metadata = { title: "Order" };
 export const dynamic = "force-dynamic";
@@ -26,6 +28,7 @@ export default async function OrderWorkbench({
   if (!user) redirect("/signin");
 
   let order;
+  let refunds: { id: string; amountCents: number; status: string; createdAt: string }[] = [];
   try {
     order = await getStoreOrder(storeId, orderId);
   } catch (err) {
@@ -39,6 +42,13 @@ export default async function OrderWorkbench({
 
   const cashPayment = order.payments.find((p) => p.provider === "CASH");
   const cashOutstanding = cashPayment && cashPayment.status !== "SUCCEEDED";
+
+  // Whatever was actually captured — a failed card attempt is not money the
+  // shop can give back.
+  const settled = order.payments.find((p) => p.status === "SUCCEEDED");
+  if (settled) {
+    refunds = await listRefunds(storeId, orderId).catch(() => []);
+  }
 
   return (
     <div className="mt-8 space-y-6">
@@ -196,6 +206,18 @@ export default async function OrderWorkbench({
               </div>
             ) : (
               <p className="text-sm text-ink-muted">No payment recorded.</p>
+            )}
+
+            {settled && (
+              <div className="mt-4 border-t border-line pt-4">
+                <RefundPanel
+                  storeId={storeId}
+                  orderId={order.id}
+                  maxCents={settled.amountCents}
+                  currency={order.currency}
+                  refunds={refunds}
+                />
+              </div>
             )}
           </Card>
         </div>

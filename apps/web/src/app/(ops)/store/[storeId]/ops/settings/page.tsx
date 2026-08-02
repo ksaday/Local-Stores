@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { api } from "@/lib/api";
 import { Card, EmptyState } from "@/components/shell";
+import { StripeConnect, type ConnectStatus } from "./stripe-connect";
 import type { DeliveryZone, Store, TaxRate } from "@/lib/types";
 import { ProfileForm, TaxRateForm, ZoneForm } from "./forms";
 
@@ -12,10 +13,13 @@ export default async function SettingsPage({
   params: Promise<{ storeId: string }>;
 }) {
   const { storeId } = await params;
-  const [store, taxRates, zones] = await Promise.all([
+  const [store, taxRates, zones, connect] = await Promise.all([
     api<Store>(`/stores/${storeId}`),
     api<TaxRate[]>(`/stores/${storeId}/tax-rates`),
     api<DeliveryZone[]>(`/stores/${storeId}/delivery-zones`),
+    // Read from our own row rather than Stripe on every render: the webhook
+    // keeps it current, and a settings page should not hang on a third party.
+    api<ConnectStatus>(`/stores/${storeId}/payments/connect`),
   ]);
 
   const theme = (store.branding?.theme ?? {}) as Record<string, string>;
@@ -24,6 +28,10 @@ export default async function SettingsPage({
     <>
       <Card title="Store details" description="What customers see on your storefront.">
         <ProfileForm storeId={storeId} store={store} theme={theme} />
+      </Card>
+
+      <Card title="Card payments" description="Take payment online, straight to your own account.">
+        <StripeConnect storeId={storeId} status={connect} />
       </Card>
 
       <Card title="Sales tax" description="Applied at checkout.">

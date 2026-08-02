@@ -31,6 +31,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "sharp": "^0.35.3",
+    "stripe": "^22.4.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

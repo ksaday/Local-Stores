@@ -129,8 +129,15 @@ model Store {
   timezone             String       @default("America/New_York")
   currency             String       @default("USD") @db.Char(3)
   branding             Json         @default("{}")
-  stripeAccountId      String?      @unique @map("stripe_account_id")
-  stripeChargesEnabled Boolean      @default(false) @map("stripe_charges_enabled")
+  stripeAccountId        String?   @unique @map("stripe_account_id")
+  stripeChargesEnabled   Boolean   @default(false) @map("stripe_charges_enabled")
+  stripePayoutsEnabled   Boolean   @default(false) @map("stripe_payouts_enabled")
+  stripeDetailsSubmitted Boolean   @default(false) @map("stripe_details_submitted")
+  /// What Stripe is still waiting for, verbatim, so settings can say exactly
+  /// what is outstanding rather than "contact support".
+  stripeRequirements     Json      @default("[]") @map("stripe_requirements")
+  stripeDisabledReason   String?   @map("stripe_disabled_reason")
+  stripeSyncedAt         DateTime? @map("stripe_synced_at")
   cashEnabled          Boolean      @default(true) @map("cash_enabled")
 
   /// Per-transaction platform fee, in basis points. NULL inherits the plan's rate.
@@ -160,6 +167,7 @@ model Store {
   carts             Cart[]
   orders            Order[]
   customerRelations CustomerStoreRelation[]
+  refunds           Refund[]
 
   @@map("stores")
 }
@@ -773,7 +781,8 @@ model Payment {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refunds Refund[]
 
   @@index([orderId])
   @@map("payments")
@@ -808,4 +817,55 @@ model CustomerStoreRelation {
 
   @@unique([storeId, userId])
   @@map("customer_store_relations")
+}
+
+// ---------------------------------------------------------------------------
+// Payments (Stripe)
+// ---------------------------------------------------------------------------
+
+/// Every webhook the provider sends, recorded before it is acted on.
+///
+/// Stripe delivers at least once and replays on failure, sometimes out of
+/// order. The unique `eventId` is what turns a replay into a no-op.
+model StripeEvent {
+  id          String    @id @default(uuid())
+  eventId     String    @unique @map("event_id")
+  type        String
+  accountId   String?   @map("account_id")
+  storeId     String?   @map("store_id")
+  payload     Json
+  receivedAt  DateTime  @default(now()) @map("received_at")
+  processedAt DateTime? @map("processed_at")
+  /// Set when a handler threw, so a failure is visible rather than lost.
+  error       String?
+
+  @@index([storeId, receivedAt])
+  @@map("stripe_events")
+}
+
+model Refund {
+  id             String       @id @default(uuid())
+  storeId        String       @map("store_id")
+  paymentId      String       @map("payment_id")
+  amountCents    Int          @map("amount_cents")
+  reasonCode     String?      @map("reason_code")
+  note           String?
+  status         RefundStatus @default(PENDING)
+  stripeRefundId String?      @map("stripe_refund_id")
+  actorUserId    String?      @map("actor_user_id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
 }

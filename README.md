@@ -28,10 +28,9 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phases 2, 4, 5 complete; Phase 7's revenue path (cart → checkout → order →
-counter sale) built and tested.** 292 tests passing. `apps/web` covers auth,
-the platform console, store settings, the public storefront, customer
-checkout, and the staff counter.
+**Phases 2, 4, 5, 7 and 8 complete.** 345 tests passing. A shop can list
+products, take an order online or over the counter, work the queue, take cash
+or card, refund, and print a receipt.
 
 ### Done
 
@@ -100,9 +99,19 @@ authority and a duplicated or dropped event costs at most a redundant refresh.
 Falls back to 15-second polling after two failures, and says which mode it is
 in — a screen staff rely on has to admit when it has stopped updating.
 
+**Payments (Stripe)** — Connect Express onboarding, so identity and bank
+details go to Stripe directly and never touch this platform. Destination
+charges settle to the store's own account with `application_fee_amount`
+omitted entirely. Webhooks verify the signature, record the event, and handle
+it once — a replay loses the unique insert and is skipped. Refunds route
+through the account that took the original payment, are written PENDING and
+confirmed by webhook, and a database trigger refuses any that would exceed what
+was captured. Cash works whether or not Stripe is configured.
+
 **Web** — Next.js App Router BFF: auth flows, the Super Admin console, store
 settings and staff management, the public storefront, the customer purchase
-flow (cart, checkout, receipt), the staff order queue, and the till.
+flow (cart, checkout, card payment, receipt), the staff order queue, and the
+till.
 
 ### Not started
 
@@ -112,7 +121,13 @@ flow (cart, checkout, receipt), the staff order queue, and the till.
 - Coupons/promotions and catalog CSV import/export (rest of Phase 5)
 - Geocoding, so delivery addresses can be matched to a zone. Checkout says
   plainly that it cannot place an address rather than guessing a fee.
-- Stripe (Phase 8). Checkout is deliberately cash-only for now, per the plan.
+- **Stripe against real keys.** Everything is built and tested against a fake
+  provider plus locally-signed webhooks, and the signature path is verified
+  end-to-end with a genuine HMAC — but no request has ever reached Stripe.
+  Walk one order through onboarding → card → refund with test keys before
+  trusting it.
+- Stripe Billing — the $49/month subscription itself. Customer payments work;
+  charging *stores* does not exist yet.
 - Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
   deployment
 - OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
@@ -214,6 +229,28 @@ publishes delivery proofs, unvalidated uploads, or a store that hasn't
 launched. An attach-time check cannot replace the policy — an asset can be
 rejected *after* it was attached to a live product.
 
+**`GRANT` is additive; append-only needs `REVOKE`.** Migration 1 sets
+`ALTER DEFAULT PRIVILEGES`, so every new table starts fully mutable by
+`bba_app` and a narrower `GRANT` in a later migration adds nothing. Tables that
+must only accumulate — `stock_movements`, `order_status_history`, `audit_logs`,
+`refunds` — carry an explicit `REVOKE UPDATE, DELETE`.
+
+**Prisma reports raw-query errors as `P2010`, with the real code in `meta`.**
+`$executeRaw` never surfaces `P2002`, so a unique-violation check written only
+against the top-level code silently misses every raw insert — which is exactly
+where it matters: idempotency keys, webhook event ids, order numbers. Use
+`isUniqueViolation` from `infra/prisma/prisma-errors.ts`.
+
+**Mounting a body parser by hand disables Nest's global one.** Nest skips
+registering its parser if it detects one already present, so a path-scoped
+`express.json({ verify })` for webhook raw bodies leaves *every other route*
+with an undefined body. Use `NestFactory.create(App, { rawBody: true })`.
+
+**`application_fee_amount` must be absent, not zero.** BBA takes no cut of any
+sale, and a zero fee still prints a fee line on the store's Stripe statement.
+`stripe.provider.test.ts` asserts the field never appears in the outbound
+request — it is a product promise, not a convention.
+
 **Pre-identity reads go through SECURITY DEFINER functions.** Login, refresh,
 redeeming a mailed token, OAuth identity lookup, recovery codes. Each takes an
 exact-match credential and returns at most one row, so none can enumerate.
@@ -278,6 +315,16 @@ The storefront is then at `/stores` and the seeded shop at
 `/stores/morse-ave-bakery`. Sign in with the credentials the seed printed to
 reach that store's order queue and watch an order you place arrive in it.
 
+To exercise card payments, put Stripe test keys in `apps/api/.env` and forward
+webhooks — `stripe listen` prints the signing secret to paste back:
+
+```bash
+stripe listen --forward-to localhost:3001/api/v1/webhooks/stripe
+```
+
+Without those keys the platform runs cash-only: card checkout is not offered,
+rather than failing at the moment a customer tries to pay.
+
 Run tests:
 
 ```bash
@@ -305,13 +352,18 @@ service containers, not a shared local install.
 
 ## Next steps (in order)
 
-1. **Phase 8 (Payments)** — Stripe Connect. The payment row, the zero
-   application fee and the provider column are already in place.
-2. **Finish Phase 7** — POS walk-in sales and print documents, then SSE so the
-   queue updates without an action.
-3. **`docker-compose.yml`** — before a second developer or CI (see above).
-4. **Rest of Phase 5** — coupons and promotions, catalog CSV import/export.
-5. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+1. **Run Stripe against real test keys.** The whole payment path is built and
+   tested against a fake provider, and signature verification is proven with a
+   genuine HMAC — but nothing has yet talked to Stripe. Walk one order through
+   onboarding → card → refund before trusting it.
+2. **`apps/worker`** — the event outbox (§12.8) and the PENDING expiry sweeper
+   need a process to run in. Order events are in-process today, so the live
+   queue is single-instance only.
+3. **Stripe Billing** — the $49/month subscription. Customer payments work;
+   charging stores does not exist.
+4. **`docker-compose.yml`** — before a second developer or CI (see above).
+5. **Rest of Phase 5** — coupons and promotions, catalog CSV import/export.
+6. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`

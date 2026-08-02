@@ -338,8 +338,12 @@ describe("expiry sweeper", () => {
       db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`,
     );
 
+    // Asserted on *this* order rather than on the sweeper's total: the sweep is
+    // global by design, so any other stale order in the database — from another
+    // suite or from manual testing — would change a global count without
+    // saying anything about whether this one was handled.
     const expired = await orders.expireStaleOrders();
-    expect(expired).toBe(1);
+    expect(expired).toBeGreaterThanOrEqual(1);
     expect(await readStock()).toMatchObject({ on_hand: 3, reserved: 0 });
 
     const detail = await orders.getForStore(STORE, order.id);

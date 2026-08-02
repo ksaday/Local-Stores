@@ -12,6 +12,7 @@ import { CatalogModule } from "./modules/catalog/catalog.module.js";
 import { CheckoutModule } from "./modules/checkout/checkout.module.js";
 import { OrderEventsModule } from "./modules/orders/order-events.module.js";
 import { OrdersModule } from "./modules/orders/orders.module.js";
+import { PaymentsModule } from "./modules/payments/payments.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { StorefrontModule } from "./modules/storefront/storefront.module.js";
 import { StoresModule } from "./modules/stores/stores.module.js";
@@ -40,6 +41,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     CartModule,
     CheckoutModule,
     OrdersModule,
+    PaymentsModule,
     HealthModule,
   ],
   providers: [

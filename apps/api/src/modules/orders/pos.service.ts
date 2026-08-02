@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
+import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { TaxProvider } from "../checkout/tax.provider.js";
@@ -378,8 +379,3 @@ function toTillItem(variant: RawVariant) {
   };
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: string }).code;
-  return code === "P2002" || code === "23505";
-}

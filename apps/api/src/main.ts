@@ -14,6 +14,16 @@ import type { Env } from "./config/env.js";
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    // Keeps the untouched request bytes on `req.rawBody` alongside the parsed
+    // body. Stripe signs the exact bytes it sent, so verification must run
+    // over those — a re-serialised body produces identical JSON and an invalid
+    // signature.
+    //
+    // Nest's own option rather than a hand-rolled `express.json({ verify })`:
+    // mounting a parser manually makes Nest detect one is already present and
+    // skip registering its global one, which silently leaves every other route
+    // with no parsed body at all.
+    rawBody: true,
   });
   const config = app.get(ConfigService<Env, true>);
 

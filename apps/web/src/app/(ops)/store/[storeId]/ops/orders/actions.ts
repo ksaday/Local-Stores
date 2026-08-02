@@ -56,3 +56,44 @@ export async function collectCash(
   revalidatePath(`/store/${storeId}/ops/orders/${orderId}`);
   return { error: null };
 }
+
+/**
+ * Refunds a payment, in whole or in part.
+ *
+ * Deliberately a separate action from cancelling an order: staff frequently
+ * want one without the other — a returned loaf is refunded but the order still
+ * happened, and a cancelled pre-order may have never been paid at all.
+ */
+export async function refundOrder(
+  _prev: OrderActionState,
+  formData: FormData,
+): Promise<OrderActionState> {
+  const storeId = String(formData.get("storeId") ?? "");
+  const orderId = String(formData.get("orderId") ?? "");
+  const amountRaw = String(formData.get("amountCents") ?? "").trim();
+  const reasonCode = String(formData.get("reasonCode") ?? "").trim();
+  const note = String(formData.get("note") ?? "").trim();
+
+  // Empty means "refund it all" — the API decides the amount from the payment
+  // rather than the browser sending a number it worked out itself.
+  const amountCents = amountRaw ? Number(amountRaw) : undefined;
+  if (amountCents !== undefined && (!Number.isFinite(amountCents) || amountCents <= 0)) {
+    return { error: "Enter an amount greater than zero." };
+  }
+
+  try {
+    await api(`/stores/${storeId}/payments/orders/${orderId}/refund`, {
+      method: "POST",
+      body: {
+        ...(amountCents !== undefined ? { amountCents: Math.round(amountCents) } : {}),
+        ...(reasonCode ? { reasonCode } : {}),
+        ...(note ? { note } : {}),
+      },
+    });
+  } catch (err) {
+    return { error: err instanceof ApiError ? err.message : "Couldn't refund that order." };
+  }
+
+  revalidatePath(`/store/${storeId}/ops/orders/${orderId}`);
+  return { error: null };
+}
