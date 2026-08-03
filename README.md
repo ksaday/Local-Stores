@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 473 tests passing. A shop can list products, take an order online or over
+in.** 480 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -83,7 +83,11 @@ second number that drifts. A correction is a new movement, never an edit —
 both the mistake and the fix stay visible. Damage is its own movement type
 rather than a reason code, because "how much did we break" and "how far out was
 the count" are different questions and only one is a supplier conversation.
-Count sessions and low-stock alerts are not built.
+A daily low-stock digest goes to the owner and any inventory managers — one
+list per shop rather than an alert per line, because a shop that sells out of
+six things on a Saturday does not need six emails. Counts are of *sellable*
+stock, so what is already promised to uncollected orders does not keep a line
+off the list. Count sessions are not built.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order

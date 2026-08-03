@@ -7,6 +7,7 @@ import { OutboxModule } from "../infra/outbox/outbox.module.js";
 import { AuditModule } from "../modules/audit/audit.module.js";
 import { BillingModule } from "../modules/billing/billing.module.js";
 import { OrdersModule } from "../modules/orders/orders.module.js";
+import { InventoryModule } from "../modules/inventory/inventory.module.js";
 import { MediaModule } from "../modules/media/media.module.js";
 import { JobLease } from "./job-lease.service.js";
 import { MailProcessor } from "./mail-processor.js";
@@ -37,6 +38,7 @@ import { WorkerScheduler } from "./scheduler.js";
     OrdersModule,
     BillingModule,
     MediaModule,
+    InventoryModule,
   ],
   providers: [JobLease, MailProcessor, MediaProcessor, OutboxRelay, WorkerScheduler],
 })

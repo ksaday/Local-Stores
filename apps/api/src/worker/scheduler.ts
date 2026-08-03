@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { BillingService } from "../modules/billing/billing.service.js";
 import { MailQueue, MediaQueue } from "../infra/queue/queue.module.js";
 import { DunningService } from "../modules/billing/dunning.service.js";
+import { LowStockAlerts } from "../modules/inventory/low-stock-alerts.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
 import { JobLease } from "./job-lease.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -59,6 +60,7 @@ export class WorkerScheduler {
     private readonly dunning: DunningService,
     private readonly mail: MailQueue,
     private readonly mediaQueue: MediaQueue,
+    private readonly lowStock: LowStockAlerts,
     private readonly lease: JobLease,
   ) {}
 
@@ -112,6 +114,19 @@ export class WorkerScheduler {
         run: async () => {
           const sent = await this.dunning.run();
           return sent > 0 ? `sent ${sent} dunning email(s)` : "";
+        },
+      },
+      {
+        // Daily, and the interval is the throttle: the lease means one pass
+        // per day across the fleet, so nobody is emailed twice about the same
+        // shelf. A digest, not an alert per line — a shop that sells out of six
+        // things on a Saturday does not need six emails.
+        name: "inventory-low-stock",
+        everyMs: 86_400_000,
+        exclusive: true,
+        run: async () => {
+          const notified = await this.lowStock.run();
+          return notified > 0 ? `low-stock digest to ${notified} store(s)` : "";
         },
       },
       {
