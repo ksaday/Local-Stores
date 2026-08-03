@@ -4,12 +4,18 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { LocalDiskStorage, StorageProvider } from "../../infra/storage/storage.provider.js";
 import type { Env } from "../../config/env.js";
-import { MediaController, MediaUploadController } from "./media.controller.js";
 import { MediaService } from "./media.service.js";
 
+/**
+ * The media domain: the service and the storage provider it writes through.
+ *
+ * Deliberately no controllers. The worker imports this for `MediaService`, and
+ * it has no HTTP layer at all — a controller here needs `PermissionResolver`
+ * and brings the whole request-side graph with it, which stops the worker
+ * booting. The routes live in `MediaHttpModule`, which only the API imports.
+ */
 @Global()
 @Module({
-  controllers: [MediaController, MediaUploadController],
   providers: [
     {
       provide: StorageProvider,

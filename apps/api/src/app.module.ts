@@ -5,6 +5,7 @@ import { validateEnv } from "./config/env.js";
 import { PrismaModule } from "./infra/prisma/prisma.module.js";
 import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { OutboxModule } from "./infra/outbox/outbox.module.js";
+import { MediaHttpModule } from "./modules/media/media-http.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
@@ -36,6 +37,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     MailerModule,
     OutboxModule,
     MediaModule,
+    MediaHttpModule,
     AuditModule,
     AuthModule,
     StoresModule,
