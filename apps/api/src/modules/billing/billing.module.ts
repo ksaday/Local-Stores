@@ -2,6 +2,7 @@ import { Module, forwardRef } from "@nestjs/common";
 import { PaymentsModule } from "../payments/payments.module.js";
 import { BillingController } from "./billing.controller.js";
 import { BillingService } from "./billing.service.js";
+import { DunningService } from "./dunning.service.js";
 
 @Module({
   // For the PaymentProvider, which carries both the Connect operations and
@@ -9,7 +10,7 @@ import { BillingService } from "./billing.service.js";
   // stream, even though the two relationships are entirely separate.
   imports: [forwardRef(() => PaymentsModule)],
   controllers: [BillingController],
-  providers: [BillingService],
-  exports: [BillingService],
+  providers: [BillingService, DunningService],
+  exports: [BillingService, DunningService],
 })
 export class BillingModule {}

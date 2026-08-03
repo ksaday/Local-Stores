@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 427 tests passing. A shop can list products, take an order online or over
+in.** 436 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -129,6 +129,14 @@ grace period, then the storefront is hidden and nothing else — catalog, orders
 and customers stay, so a shop that lapses and returns finds its products
 waiting. Paying reinstates a store we suspended, and only one we suspended.
 
+**Dunning** — four emails across the seven-day grace period: the payment
+failed, a reminder, a last warning the day before the storefront goes down, and
+a note once it has. The sweep runs hourly, so what stops an owner receiving 168
+copies is a unique index on (store, unpaid episode, stage) rather than a check
+in application code — two workers would otherwise both read "not yet sent"
+before either wrote. Keyed on the episode, not the store, so a shop that lapses
+twice is warned twice.
+
 **Coupons** — percent or fixed, minimum spend, date windows, total and
 per-customer limits. Validated at quote time for the shopper and again inside
 the order transaction, which is the binding one. The discount is capped at the
@@ -158,8 +166,6 @@ coupon management and the CSV tools.
   product and price and writes the id onto the plan row; it has been run
   against test mode, where a store can now subscribe end to end. It still has
   to be run once against live keys before anyone is charged for real.
-- Dunning email. The grace-period warning is in-app only today, so an owner who
-  does not sign in learns their storefront is hidden by finding it hidden.
 - Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
   deployment
 - OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
@@ -429,18 +435,15 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Dunning emails.** The grace-period warning is in-app only, so an owner who
-   does not sign in gets no warning before their storefront is hidden. Needs
-   mail moved onto the worker.
-2. **Move mail and media processing onto the worker.** Both run inline in the
+1. **Move mail and media processing onto the worker.** Both run inline in the
    API request today; a slow image resize blocks a response that should have
    returned already. This is what BullMQ's retries and dead-lettering are for.
-3. **A distributed lock on scheduled jobs**, before running a second worker.
-4. **Inventory management surfaces** — receiving, count sessions, low-stock
+2. **A distributed lock on scheduled jobs**, before running a second worker.
+3. **Inventory management surfaces** — receiving, count sessions, low-stock
    alerts. The ledger and reservation semantics they build on are done.
-5. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+4. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-6. **Phases 9–12**: delivery, reporting, hardening, deployment.
+5. **Phases 9–12**: delivery, reporting, hardening, deployment.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

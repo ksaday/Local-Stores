@@ -42,7 +42,10 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  // 3100, matching .claude/launch.json and CI. The default is what unset
+  // environments fall back to, and it builds every link in outbound mail — so
+  // Next's own default of 3000 here would send real warnings to a dead port.
+  WEB_ORIGIN: z.string().url().default("http://localhost:3100"),
 
   /**
    * Public base URL for uploaded media.

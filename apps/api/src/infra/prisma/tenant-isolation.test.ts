@@ -75,7 +75,8 @@ async function teardown(): Promise<void> {
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
-    await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM billing_notifications WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${[OWNER_A, OWNER_B]})`;
 }
 
@@ -183,6 +184,28 @@ describe("cross-tenant isolation (RLS)", () => {
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
       (tx) => tx.order.findMany({ where: { id: orderId } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's billing notices from another store", async () => {
+    // Dunning records say when a shop stopped paying and started heading for
+    // suspension. A competing shop on the same platform reading that would be
+    // a straightforwardly commercial leak.
+    const noticeId = crypto.randomUUID();
+    await admin.$executeRaw`
+      INSERT INTO billing_notifications (id,store_id,past_due_since,stage,sent_to)
+      VALUES (${noticeId},${STORE_B},now(),'FINAL_WARNING','owner-b@example.com')`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.billingNotification.findMany({ where: { id: noticeId } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.billingNotification.findMany({ where: { id: noticeId } }),
     );
 
     expect(fromStoreA).toHaveLength(0);

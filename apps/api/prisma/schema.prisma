@@ -170,6 +170,7 @@ model Store {
   refunds           Refund[]
   subscription      StoreSubscription?
   coupons           Coupon[]
+  billingNotices    BillingNotification[]
 
   @@map("stores")
 }
@@ -953,6 +954,33 @@ model StoreSubscription {
   plan  Plan  @relation(fields: [planCode], references: [code])
 
   @@map("store_subscriptions")
+}
+
+/// One dunning email that was sent. Append-only: the record of what a store
+/// was told, and when.
+model BillingNotification {
+  id           String       @id @default(uuid())
+  storeId      String       @map("store_id")
+  /// Which unpaid episode this belongs to, so a store that lapses twice is
+  /// warned twice. See the migration for why this is not keyed on the store.
+  pastDueSince DateTime     @map("past_due_since")
+  stage        DunningStage
+  /// The address at the time of sending, not the owner's address today.
+  sentTo       String       @map("sent_to")
+  sentAt       DateTime     @default(now()) @map("sent_at")
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, pastDueSince, stage], map: "billing_notifications_once")
+  @@index([storeId, pastDueSince], map: "billing_notifications_episode")
+  @@map("billing_notifications")
+}
+
+enum DunningStage {
+  PAYMENT_FAILED
+  GRACE_REMINDER
+  FINAL_WARNING
+  SUSPENDED
 }
 
 enum SubscriptionStatus {

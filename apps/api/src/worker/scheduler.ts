@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { BillingService } from "../modules/billing/billing.service.js";
+import { DunningService } from "../modules/billing/dunning.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
 
@@ -31,6 +32,7 @@ export class WorkerScheduler {
     private readonly orders: OrdersService,
     private readonly relay: OutboxRelay,
     private readonly billing: BillingService,
+    private readonly dunning: DunningService,
   ) {}
 
   jobs(): ScheduledJob[] {
@@ -64,6 +66,18 @@ export class WorkerScheduler {
         run: async () => {
           const suspended = await this.billing.suspendExpiredGracePeriods();
           return suspended > 0 ? `suspended ${suspended} unpaid store(s)` : "";
+        },
+      },
+      {
+        // Runs on the same hourly beat as the suspension sweep, and
+        // deliberately after it in the list: when a store's grace period runs
+        // out, the pass that takes it offline is followed by the pass that
+        // says so, rather than the owner finding out an hour later.
+        name: "billing-dunning",
+        everyMs: 3_600_000,
+        run: async () => {
+          const sent = await this.dunning.run();
+          return sent > 0 ? `sent ${sent} dunning email(s)` : "";
         },
       },
       {
