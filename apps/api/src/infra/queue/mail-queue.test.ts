@@ -91,7 +91,7 @@ describe("the mail queue", () => {
         if (attempts === 1) throw new Error("451 try again later");
       },
     };
-    await queue.enqueueWith(EMAIL, { attempts: 3, backoff: { type: "fixed", delay: 20 } });
+    await queue.enqueueWith(SEND_EMAIL_JOB, EMAIL, { attempts: 3, backoff: { type: "fixed", delay: 20 } });
 
     processor = new MailProcessor(flaky, config, queueName);
     processor.start();
@@ -108,7 +108,7 @@ describe("the mail queue", () => {
         throw new Error("550 mailbox unavailable");
       },
     };
-    await queue.enqueueWith(EMAIL, { attempts: 2, backoff: { type: "fixed", delay: 10 } });
+    await queue.enqueueWith(SEND_EMAIL_JOB, EMAIL, { attempts: 2, backoff: { type: "fixed", delay: 10 } });
 
     processor = new MailProcessor(broken, config, queueName);
     processor.start();

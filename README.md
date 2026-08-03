@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 441 tests passing. A shop can list products, take an order online or over
+in.** 445 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -58,7 +58,8 @@ overrides; `platform:*` permissions check platform role instead.
 **Store management** — public applications, Super Admin review and
 provisioning, lifecycle transitions, hours, tax rates, delivery zones with
 serviceability checks, branding with WCAG AA contrast validation, staff
-management, media upload pipeline, append-only audit log.
+management, append-only audit log. (The media *pipeline* is built — see the
+media queue below — but has no HTTP surface yet, so nothing can drive it.)
 
 **Catalog** — categories with a depth limit, products with variants and
 images, per-store SKU uniqueness, Postgres full-text search over name and
@@ -121,6 +122,16 @@ That is what makes the live queue correct with more than one API process and
 across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
 and a dead-letter check (5m).
 
+**Media queue** — image validation and re-encoding run on the worker. Only the
+asset id travels through Redis; the bytes wait in the quarantine prefix, which
+is never publicly served. The security properties did not move: magic-byte
+detection, SVG refusal, the pixel-count bomb check and the re-encode that
+strips EXIF all still happen before anything reaches the public prefix. A file
+that turns out not to be an image is a *completed* job with a verdict on the
+asset row, not a failed one — decoding it twice more reaches the same answer
+and pays the CPU cost again. Concurrency two, against mail's five, because this
+is the one queue whose work is CPU-bound.
+
 **Mail queue** — outbound mail goes onto a BullMQ notifications queue and the
 worker delivers it, so a rate-limited or briefly down provider is a retry
 nobody sees rather than a "reset my password" request that hangs and then fails
@@ -163,9 +174,14 @@ coupon management and the CSV tools.
 
 ### Not started
 
-- Media processing on the worker. Mail has moved onto the notifications queue,
-  but image re-encoding still runs inline in the upload request, so a large
-  photo holds a response open while it is resized.
+- **Any way to upload an image over HTTP.** The pipeline underneath is built
+  and tested — validation, re-encoding, variants, quarantine, RLS, and now the
+  worker — but `MediaService` has no controller, so nothing outside the test
+  suite can reach it and a store owner cannot add a product photo. The plan's
+  §13.7 flow is three steps (`POST /media/upload-url` → presigned PUT straight
+  to quarantine → `POST /media/{id}/complete`), deliberately so that untrusted
+  bytes never pass through the API process. It needs S3 presigning, or a local
+  stand-in for it in development.
 - A distributed lock on scheduled jobs. Two workers would each run the expiry
   sweep; that is currently harmless only because every job is idempotent, and
   it must be fixed before running a second worker.
@@ -447,9 +463,9 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Move media processing onto the worker**, the way mail now is. Image
-   re-encoding still runs inline, so a large photo holds a response open while
-   it is resized.
+1. **The media upload endpoints** (§13.7): `POST /media/upload-url`, the
+   presigned PUT, and `POST /media/{assetId}/complete`. Everything behind them
+   is done; without them no image can be uploaded at all.
 2. **A distributed lock on scheduled jobs**, before running a second worker.
    Note this does *not* apply to the mail queue: BullMQ hands each job to one
    consumer, so a second worker doubles mail throughput rather than doubling

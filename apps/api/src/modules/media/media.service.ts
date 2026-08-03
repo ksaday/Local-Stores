@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import sharp, { type Metadata, type Sharp } from "sharp";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { MediaQueue } from "../../infra/queue/queue.module.js";
 import { StorageProvider } from "../../infra/storage/storage.provider.js";
 import { AuditService } from "../audit/audit.service.js";
 
@@ -33,7 +34,7 @@ interface TenantScope {
 export interface UploadResult {
   assetId: string;
   url: string | null;
-  status: "READY" | "REJECTED";
+  status: "PENDING" | "READY" | "REJECTED";
   reason?: string;
 }
 
@@ -45,15 +46,22 @@ export class MediaService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageProvider,
     private readonly audit: AuditService,
+    private readonly queue: MediaQueue,
   ) {}
 
   /**
-   * Accept, validate, and process an upload (plan §13.7).
+   * Accept an upload and hand it to the media queue (plan §13.7).
    *
-   * Runs inline rather than through a queue because BullMQ is not wired yet
-   * (Phase 9). The security properties do not depend on where it runs — bytes
-   * reach the public prefix only after validation and re-encoding either way —
-   * so moving this to a worker later is a relocation, not a redesign.
+   * Returns as soon as the bytes are in quarantine. Decoding and re-encoding
+   * four variants of a ten-megapixel photo is seconds of CPU, and it used to
+   * happen inside the caller's request — one upload could hold a request open
+   * long enough to look like a hang, and several at once would saturate the
+   * event loop for every other request the process was serving.
+   *
+   * The security properties are unchanged by the move: bytes reach the public
+   * prefix only after magic-byte validation and re-encoding, and they sit in
+   * the quarantine prefix (never publicly served) until then. What changes is
+   * only where that happens.
    */
   async upload(input: {
     body: Buffer;
@@ -92,19 +100,88 @@ export class MediaService {
     });
 
     await this.storage.putQuarantine(quarantineKey, input.body);
+    await this.queue.enqueue({ assetId: asset.id, quarantineKey });
 
-    const scope = { storeId: input.storeId, userId: input.ownerUserId, isSuperAdmin: false };
+    return { assetId: asset.id, url: null, status: "PENDING" };
+  }
+
+  /**
+   * Validate and re-encode a quarantined upload. Runs on the worker.
+   *
+   * Takes only the ids: everything else is re-read from the asset row, because
+   * a job may be picked up by a different process minutes after the upload, and
+   * anything passed through the payload would be a second copy of state that
+   * could disagree with the database.
+   */
+  async processQueued(assetId: string, quarantineKey: string): Promise<UploadResult> {
+    // Read as the platform. The job has no request behind it and therefore no
+    // tenant context of its own; the row's own store and owner are what the
+    // subsequent writes are scoped to.
+    const [asset] = await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
+      tx.$queryRaw<
+        { store_id: string | null; owner_user_id: string | null; storage_key: string; is_private: boolean }[]
+      >`
+        SELECT store_id, owner_user_id, storage_key, is_private
+        FROM media_assets WHERE id = ${assetId}
+      `,
+    );
+
+    if (!asset) {
+      // Deleted between upload and processing. Nothing to do, and nothing
+      // wrong — but the quarantined bytes should not be left behind.
+      await this.storage.discardQuarantine(quarantineKey);
+      this.logger.warn(`Media ${assetId} no longer exists; discarded its upload`);
+      return { assetId, url: null, status: "REJECTED", reason: "The asset no longer exists." };
+    }
+
+    const scope: TenantScope = {
+      storeId: asset.store_id ?? undefined,
+      userId: asset.owner_user_id ?? undefined,
+      isSuperAdmin: false,
+    };
 
     try {
-      const result = await this.process(asset.id, quarantineKey, baseKey, isPrivate, scope);
+      const result = await this.process(
+        assetId,
+        quarantineKey,
+        asset.storage_key,
+        asset.is_private,
+        scope,
+      );
       await this.storage.discardQuarantine(quarantineKey);
       return result;
     } catch (err) {
+      // A rejection is a verdict on the file, not a failure of the job: the
+      // answer will be the same next time, so it is recorded and the job
+      // completes rather than retrying three times to reach it again.
       await this.storage.discardQuarantine(quarantineKey);
       const reason = err instanceof AppError ? err.message : "The file could not be processed.";
-      await this.markRejected(asset.id, reason, scope);
-      return { assetId: asset.id, url: null, status: "REJECTED", reason };
+      await this.markRejected(assetId, reason, scope);
+      return { assetId, url: null, status: "REJECTED", reason };
     }
+  }
+
+  /** The current state of an upload, for a caller waiting on it. */
+  async status(assetId: string, scope: TenantScope): Promise<UploadResult> {
+    const [asset] = await this.prisma.withTenant(scope, (tx) =>
+      tx.$queryRaw<
+        { status: string; storage_key: string; is_private: boolean; reject_reason: string | null }[]
+      >`
+        SELECT status::text, storage_key, is_private, reject_reason
+        FROM media_assets WHERE id = ${assetId}
+      `,
+    );
+    if (!asset) throw AppError.notFound();
+
+    return {
+      assetId,
+      status: asset.status as UploadResult["status"],
+      url:
+        asset.status === "READY" && !asset.is_private
+          ? this.storage.publicUrl(`${asset.storage_key}/original.webp`)
+          : null,
+      ...(asset.reject_reason ? { reason: asset.reject_reason } : {}),
+    };
   }
 
   private async process(

@@ -5,9 +5,11 @@ import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { MediaQueue } from "../../infra/queue/queue.module.js";
 import { LocalDiskStorage } from "../../infra/storage/storage.provider.js";
 import { AuditService } from "../audit/audit.service.js";
-import { MediaService } from "./media.service.js";
+import { MediaService, type UploadResult } from "./media.service.js";
+import { randomUUID } from "node:crypto";
 
 const APP_DATABASE_URL =
   process.env.DATABASE_URL_APP ?? "postgresql://bba_app@localhost:5432/bba_dev?schema=public";
@@ -17,25 +19,55 @@ const OWNER = "f0000000-0000-4000-8000-000000000001";
 
 let prisma: PrismaService;
 let media: MediaService;
+let queue: MediaQueue;
 let storageRoot: string;
+
+const queueConfig = {
+  get: (key: string) =>
+    key === "REDIS_URL" ? (process.env.REDIS_URL ?? "redis://localhost:6379") : "test",
+} as never;
 
 beforeAll(async () => {
   storageRoot = await mkdtemp(join(tmpdir(), "bba-media-"));
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   const storage = new LocalDiskStorage(storageRoot, "http://localhost:3000/media");
-  media = new MediaService(prisma, storage, new AuditService(prisma));
+  // A queue of its own, so a developer's running worker does not race this
+  // suite for its jobs.
+  queue = new MediaQueue(queueConfig, `test-media-${randomUUID().slice(0, 8)}`);
+  media = new MediaService(prisma, storage, new AuditService(prisma), queue);
   await seed();
 });
 
 afterAll(async () => {
   await cleanup();
+  await queue.obliterate();
+  await queue.onModuleDestroy();
   await prisma.$disconnect();
   await rm(storageRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   await asAdmin((a) => a.$executeRaw`DELETE FROM media_assets WHERE store_id = ${STORE}`);
+  await queue.obliterate();
 });
+
+/**
+ * Uploads, then runs the step the worker would run.
+ *
+ * `upload` only quarantines the bytes and enqueues now, so a test that asserts
+ * on variants or on EXIF has to do the processing half too. Running it inline
+ * here keeps those assertions about the pipeline rather than about timing —
+ * the queue itself is covered separately in the media-queue suite.
+ */
+async function uploadAndProcess(
+  input: Parameters<MediaService["upload"]>[0],
+): Promise<UploadResult> {
+  const accepted = await media.upload(input);
+  expect(accepted.status).toBe("PENDING");
+  const [job] = await queue.waiting();
+  expect(job, "upload should have enqueued a job").toBeDefined();
+  return media.processQueued(accepted.assetId, job!.data.quarantineKey);
+}
 
 async function asAdmin<T>(work: (admin: PrismaService) => Promise<T>): Promise<T> {
   const admin = new PrismaService();
@@ -97,7 +129,7 @@ async function makeJpegWithExif(): Promise<Buffer> {
 
 describe("accepted uploads", () => {
   it("processes a PNG into responsive WebP variants", async () => {
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: await makePng(),
       declaredMime: "image/png",
       kind: "BRANDING",
@@ -124,7 +156,7 @@ describe("accepted uploads", () => {
     const before = await sharp(withExif).metadata();
     expect(before.exif).toBeDefined();
 
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: withExif,
       declaredMime: "image/jpeg",
       kind: "PRODUCT",
@@ -139,7 +171,7 @@ describe("accepted uploads", () => {
 
   it("does not enlarge an image smaller than the variant size", async () => {
     const small = await makePng(80, 60);
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: small,
       declaredMime: "image/png",
       kind: "PRODUCT",
@@ -155,7 +187,7 @@ describe("accepted uploads", () => {
   it("keeps proof photos out of the public prefix", async () => {
     // Delivery proofs show a customer's doorway. They are served by short-lived
     // presigned URL, never a stable public one.
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: await makePng(),
       declaredMime: "image/jpeg",
       kind: "PROOF",
@@ -175,7 +207,7 @@ describe("rejected uploads", () => {
     // The caller controls Content-Type entirely. A script announced as
     // image/png must be caught by inspecting the bytes.
     const script = Buffer.from('<?php system($_GET["c"]); ?>', "utf8");
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: script,
       declaredMime: "image/png",
       kind: "PRODUCT",
@@ -211,7 +243,7 @@ describe("rejected uploads", () => {
     const png = await makePng(50, 50);
     const polyglot = Buffer.concat([png, Buffer.from('<?php system($_GET["c"]); ?>', "utf8")]);
 
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: polyglot,
       declaredMime: "image/png",
       kind: "PRODUCT",
@@ -252,7 +284,7 @@ describe("rejected uploads", () => {
       .png({ compressionLevel: 9 })
       .toBuffer();
 
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: bomb,
       declaredMime: "image/png",
       kind: "PRODUCT",
@@ -264,7 +296,7 @@ describe("rejected uploads", () => {
   });
 
   it("records a rejection in the audit log", async () => {
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: Buffer.from("not an image at all", "utf8"),
       declaredMime: "image/png",
       kind: "PRODUCT",
@@ -282,7 +314,7 @@ describe("rejected uploads", () => {
 describe("storage key generation", () => {
   it("never derives a path from the caller's filename", async () => {
     // A traversal attempt in the filename must not influence where bytes land.
-    const result = await media.upload({
+    const result = await uploadAndProcess({
       body: await makePng(),
       declaredMime: "image/png",
       kind: "PRODUCT",

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { BillingService } from "../modules/billing/billing.service.js";
-import { MailQueue } from "../infra/queue/queue.module.js";
+import { MailQueue, MediaQueue } from "../infra/queue/queue.module.js";
 import { DunningService } from "../modules/billing/dunning.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -37,6 +37,7 @@ export class WorkerScheduler {
     private readonly billing: BillingService,
     private readonly dunning: DunningService,
     private readonly mail: MailQueue,
+    private readonly mediaQueue: MediaQueue,
   ) {}
 
   jobs(): ScheduledJob[] {
@@ -99,6 +100,12 @@ export class WorkerScheduler {
           const undelivered = await this.mail.deadLettered();
           if (undelivered > 0) {
             this.logger.error(`${undelivered} email(s) failed every attempt and were not delivered`);
+          }
+
+          // An image an owner uploaded and is still waiting to see appear.
+          const unprocessed = await this.mediaQueue.deadLettered();
+          if (unprocessed > 0) {
+            this.logger.error(`${unprocessed} image(s) failed every attempt and remain unprocessed`);
           }
           return "";
         },

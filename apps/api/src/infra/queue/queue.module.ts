@@ -1,91 +1,58 @@
-import { Global, Injectable, Logger, Module, Optional, type OnModuleDestroy } from "@nestjs/common";
+import { Global, Injectable, Module, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Queue, type Job, type JobsOptions } from "bullmq";
-import Redis from "ioredis";
 import type { Env } from "../../config/env.js";
+import { BullQueue } from "./bull-queue.js";
 import { MAIL_JOB_OPTIONS, MAIL_QUEUE_NAME, SEND_EMAIL_JOB, type MailJob } from "./mail-queue.js";
+import {
+  MEDIA_JOB_OPTIONS,
+  MEDIA_QUEUE_NAME,
+  PROCESS_IMAGE_JOB,
+  type MediaJob,
+} from "./media-queue.js";
+
+export { createQueueConnection } from "./bull-queue.js";
 
 /**
- * Builds the Redis connection BullMQ needs.
+ * `name` is overridden only by tests, so a suite does not enqueue into the
+ * queue a developer's worker is draining — which would either do the work for
+ * real or consume theirs.
  *
- * `maxRetriesPerRequest: null` is required by BullMQ rather than a preference:
- * its blocking commands sit open for many seconds, and ioredis' default would
- * abort them as failed requests.
- */
-export function createQueueConnection(url: string): Redis {
-  const connection = new Redis(url, { maxRetriesPerRequest: null });
-  // Without a handler ioredis emits `error` as an unhandled event, which takes
-  // the process down over a blip it was going to recover from.
-  connection.on("error", (err) => new Logger("Queue").warn(`Redis error: ${err.message}`));
-  return connection;
-}
-
-/**
- * The notifications queue (plan §7.6).
- *
- * A thin class rather than a bare `Queue` provider so the connection has an
- * owner. BullMQ holds an open Redis socket, and something has to close it —
- * otherwise the API lingers on shutdown and a test run hangs after its last
- * assertion has already passed.
+ * `@Optional()` is load-bearing on that parameter: without it Nest reads the
+ * type as `String`, looks for a provider of that, and refuses to start.
  */
 @Injectable()
-export class MailQueue implements OnModuleDestroy {
-  private readonly connection: Redis;
-  private readonly queue: Queue<MailJob>;
-
-  /**
-   * `name` is overridden only by tests, so a suite does not enqueue into the
-   * queue a developer's worker is draining — which would either deliver test
-   * mail for real or consume theirs.
-   */
-  constructor(
-    config: ConfigService<Env, true>,
-    // @Optional() is load-bearing: without it Nest reads the parameter's type
-    // as `String`, looks for a provider of that, and refuses to start.
-    @Optional() name: string = MAIL_QUEUE_NAME,
-  ) {
-    this.connection = createQueueConnection(config.get("REDIS_URL", { infer: true }));
-    this.queue = new Queue<MailJob>(name, { connection: this.connection });
-  }
-
-  /** Enqueue with non-default options. Tests use it to avoid real backoff waits. */
-  async enqueueWith(job: MailJob, options: JobsOptions): Promise<void> {
-    await this.queue.add(SEND_EMAIL_JOB, job, options);
-  }
-
-  /** Removes the queue entirely, including its job history. Test teardown. */
-  async obliterate(): Promise<void> {
-    await this.queue.obliterate({ force: true }).catch(() => undefined);
+export class MailQueue extends BullQueue<MailJob> {
+  constructor(config: ConfigService<Env, true>, @Optional() name: string = MAIL_QUEUE_NAME) {
+    super(config.get("REDIS_URL", { infer: true }), name);
   }
 
   async enqueue(job: MailJob): Promise<void> {
-    await this.queue.add(SEND_EMAIL_JOB, job, MAIL_JOB_OPTIONS);
+    await this.enqueueWith(SEND_EMAIL_JOB, job, MAIL_JOB_OPTIONS);
+  }
+}
+
+/** See `MailQueue` for why `name` is optional. */
+@Injectable()
+export class MediaQueue extends BullQueue<MediaJob> {
+  constructor(config: ConfigService<Env, true>, @Optional() name: string = MEDIA_QUEUE_NAME) {
+    super(config.get("REDIS_URL", { infer: true }), name);
   }
 
-  /** Jobs waiting to be delivered. Test inspection. */
-  async waiting(): Promise<Job<MailJob>[]> {
-    return this.queue.getWaiting();
-  }
-
-  /** Jobs that exhausted every attempt: mail that never arrived. */
-  async deadLettered(): Promise<number> {
-    return this.queue.getFailedCount();
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.queue.close().catch(() => undefined);
-    await this.connection.quit().catch(() => undefined);
+  async enqueue(job: MediaJob): Promise<void> {
+    await this.enqueueWith(PROCESS_IMAGE_JOB, job, MEDIA_JOB_OPTIONS);
   }
 }
 
 /**
- * Global because mail is sent from all over the application, and threading a
- * queue import through every module that happens to send an email would say
- * nothing useful about those modules.
+ * The async job seam (plan §7.6).
+ *
+ * Global because work is enqueued from all over the application, and threading
+ * a queue import through every module that happens to send an email or accept
+ * an image would say nothing useful about those modules.
  */
 @Global()
 @Module({
-  providers: [MailQueue],
-  exports: [MailQueue],
+  providers: [MailQueue, MediaQueue],
+  exports: [MailQueue, MediaQueue],
 })
 export class QueueModule {}
