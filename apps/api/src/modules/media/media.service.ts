@@ -4,7 +4,7 @@ import sharp, { type Metadata, type Sharp } from "sharp";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { MediaQueue } from "../../infra/queue/queue.module.js";
-import { StorageProvider } from "../../infra/storage/storage.provider.js";
+import { StorageProvider, type PresignedUpload } from "../../infra/storage/storage.provider.js";
 import { AuditService } from "../audit/audit.service.js";
 
 export type MediaKind = "PRODUCT" | "BRANDING" | "PROOF" | "SIGNATURE" | "EXPORT";
@@ -24,6 +24,23 @@ const VARIANTS = [
   { name: "medium", edge: 800 },
   { name: "large", edge: 1600 },
 ] as const;
+
+/**
+ * The quarantine object for an asset, derived rather than stored.
+ *
+ * Both entry points and the worker have to agree on this, and a second column
+ * holding it would be a second thing that can disagree with the first.
+ */
+function quarantineKeyFor(baseKey: string): string {
+  return `${baseKey}.bin`;
+}
+
+function assertAcceptedMime(mime: string): void {
+  if (ACCEPTED_MIME.has(mime)) return;
+  throw AppError.validation("Upload a JPEG, PNG, WebP, or AVIF image.", [
+    { field: "file", code: "UNSUPPORTED_TYPE", message: `${mime} is not accepted.` },
+  ]);
+}
 
 interface TenantScope {
   storeId?: string;
@@ -50,43 +67,31 @@ export class MediaService {
   ) {}
 
   /**
-   * Accept an upload and hand it to the media queue (plan §13.7).
+   * Step one of §13.7: reserve an asset and hand back somewhere to put it.
    *
-   * Returns as soon as the bytes are in quarantine. Decoding and re-encoding
-   * four variants of a ten-megapixel photo is seconds of CPU, and it used to
-   * happen inside the caller's request — one upload could hold a request open
-   * long enough to look like a hang, and several at once would saturate the
-   * event loop for every other request the process was serving.
-   *
-   * The security properties are unchanged by the move: bytes reach the public
-   * prefix only after magic-byte validation and re-encoding, and they sit in
-   * the quarantine prefix (never publicly served) until then. What changes is
-   * only where that happens.
+   * Validates only what can be validated before the bytes exist — the declared
+   * type and a size ceiling — and binds both into the upload grant, so the
+   * storage layer refuses anything else without this process seeing it. What
+   * the file *really* is gets decided on the worker, from its magic bytes,
+   * because a caller controls the declared type entirely.
    */
-  async upload(input: {
-    body: Buffer;
+  async requestUpload(input: {
     declaredMime: string;
+    declaredBytes: number;
     originalName?: string;
     kind: MediaKind;
     storeId?: string;
     ownerUserId?: string;
-  }): Promise<UploadResult> {
-    // Cheap checks first, before any bytes are written anywhere.
-    if (input.body.length === 0) throw AppError.validation("The file is empty.");
-    if (input.body.length > MAX_BYTES) {
+  }): Promise<{ assetId: string; upload: PresignedUpload }> {
+    if (input.declaredBytes <= 0) throw AppError.validation("The file is empty.");
+    if (input.declaredBytes > MAX_BYTES) {
       throw AppError.validation(`Files must be under ${MAX_BYTES / 1024 / 1024} MB.`);
     }
-    if (!ACCEPTED_MIME.has(input.declaredMime)) {
-      throw AppError.validation(
-        "Upload a JPEG, PNG, WebP, or AVIF image.",
-        [{ field: "file", code: "UNSUPPORTED_TYPE", message: `${input.declaredMime} is not accepted.` }],
-      );
-    }
+    assertAcceptedMime(input.declaredMime);
 
     const isPrivate = input.kind === "PROOF" || input.kind === "SIGNATURE";
     // Server-generated key. The user's filename never reaches a path.
     const baseKey = `${input.kind.toLowerCase()}/${randomUUID()}`;
-    const quarantineKey = `${baseKey}.bin`;
 
     const asset = await this.createPendingAsset({
       storeId: input.storeId,
@@ -94,15 +99,55 @@ export class MediaService {
       kind: input.kind,
       storageKey: baseKey,
       mime: input.declaredMime,
-      bytes: input.body.length,
+      bytes: input.declaredBytes,
       originalName: input.originalName,
       isPrivate,
     });
 
-    await this.storage.putQuarantine(quarantineKey, input.body);
-    await this.queue.enqueue({ assetId: asset.id, quarantineKey });
+    const upload = await this.storage.presignUpload(
+      quarantineKeyFor(baseKey),
+      input.declaredMime,
+      MAX_BYTES,
+    );
 
-    return { assetId: asset.id, url: null, status: "PENDING" };
+    return { assetId: asset.id, upload };
+  }
+
+  /**
+   * Step two of §13.7: the client says it has finished uploading.
+   *
+   * Confirms the object is actually there before enqueueing. Taking the
+   * client's word would put a job on the queue for a file that does not exist,
+   * which then fails three times and dead-letters — a confusing way to report
+   * "you never uploaded anything".
+   */
+  async completeUpload(assetId: string, scope: TenantScope): Promise<UploadResult> {
+    const [asset] = await this.prisma.withTenant(scope, (tx) =>
+      tx.$queryRaw<{ status: string; storage_key: string }[]>`
+        SELECT status::text, storage_key FROM media_assets WHERE id = ${assetId}
+      `,
+    );
+    if (!asset) throw AppError.notFound();
+
+    // Idempotent by status: a double-tapped "done" must not queue the image
+    // twice, and re-completing something already processed is a no-op rather
+    // than an error the caller has to interpret.
+    if (asset.status !== "PENDING") return this.status(assetId, scope);
+
+    const quarantineKey = quarantineKeyFor(asset.storage_key);
+    const size = await this.storage.quarantineSize(quarantineKey);
+    if (size === null) {
+      throw AppError.validation("That upload never arrived. Try uploading the file again.");
+    }
+    if (size > MAX_BYTES) {
+      // Belt and braces: the grant already caps this, but a storage layer that
+      // failed to enforce it must not hand the worker an unbounded file.
+      await this.storage.discardQuarantine(quarantineKey);
+      throw AppError.validation(`Files must be under ${MAX_BYTES / 1024 / 1024} MB.`);
+    }
+
+    await this.queue.enqueue({ assetId, quarantineKey });
+    return { assetId, url: null, status: "PENDING" };
   }
 
   /**

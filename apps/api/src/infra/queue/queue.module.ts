@@ -38,8 +38,17 @@ export class MediaQueue extends BullQueue<MediaJob> {
     super(config.get("REDIS_URL", { infer: true }), name);
   }
 
+  /**
+   * One asset, one processing job — ever.
+   *
+   * The job id is the asset id, which BullMQ treats as a deduplication key:
+   * adding it again while the first is queued or retained is ignored. The
+   * asset row cannot carry this, because it reads PENDING both before the
+   * client has uploaded anything and while the worker is working, so a
+   * double-tapped "done" would otherwise run sharp over the same file twice.
+   */
   async enqueue(job: MediaJob): Promise<void> {
-    await this.enqueueWith(PROCESS_IMAGE_JOB, job, MEDIA_JOB_OPTIONS);
+    await this.enqueueWith(PROCESS_IMAGE_JOB, job, { ...MEDIA_JOB_OPTIONS, jobId: job.assetId });
   }
 }
 

@@ -5,6 +5,7 @@ import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { join } from "node:path";
 import cookieParser from "cookie-parser";
+import express from "express";
 import helmet from "helmet";
 import { AppModule } from "./app.module.js";
 import { ProblemDetailsFilter } from "./common/filters/problem-details.filter.js";
@@ -29,6 +30,27 @@ async function bootstrap(): Promise<void> {
 
   app.use(helmet());
   app.use(cookieParser());
+
+  // Image bytes for the local stand-in for a presigned PUT (§13.7). Nest's own
+  // parsers handle JSON, urlencoded and text, so an `image/*` body would
+  // otherwise never be read at all.
+  //
+  // `express.raw` and not `express.json`: mounting a *json* parser by hand is
+  // what previously made Nest detect one was already present and skip
+  // registering its global one, silently leaving every other route with no
+  // parsed body. This registers under a different name and leaves that alone.
+  //
+  // Nothing in the suite covers this file — it is the bootstrap — so the check
+  // that JSON bodies still parse was made against a running API, and has to be
+  // made that way again if this block changes.
+  app.use(
+    express.raw({
+      type: ["image/jpeg", "image/png", "image/webp", "image/avif"],
+      // The signed grant carries the real ceiling; this only stops a body far
+      // larger than any grant allows from being buffered to find that out.
+      limit: "12mb",
+    }),
+  );
 
   // Same-origin by default: the browser talks to the Next.js BFF, which forwards
   // the auth cookie server-side. Only the web origin is allowed, and credentials

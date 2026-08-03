@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 445 tests passing. A shop can list products, take an order online or over
+in.** 453 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -58,8 +58,7 @@ overrides; `platform:*` permissions check platform role instead.
 **Store management** — public applications, Super Admin review and
 provisioning, lifecycle transitions, hours, tax rates, delivery zones with
 serviceability checks, branding with WCAG AA contrast validation, staff
-management, append-only audit log. (The media *pipeline* is built — see the
-media queue below — but has no HTTP surface yet, so nothing can drive it.)
+management, media upload and processing, append-only audit log.
 
 **Catalog** — categories with a depth limit, products with variants and
 images, per-store SKU uniqueness, Postgres full-text search over name and
@@ -122,6 +121,22 @@ That is what makes the live queue correct with more than one API process and
 across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
 and a dead-letter check (5m).
 
+**Media upload** — the three-step flow from §13.7: ask for an upload URL, PUT
+the file straight to storage, then say you have finished. The API never
+receives the bytes in production — it sees a declared type and a byte count,
+and nothing else, until the worker opens the file and decides what it really
+is. Which permission the first step needs depends on what is being uploaded
+(`catalog:write` for a product photo, `store:branding` for a logo), because a
+clerk who can edit the catalog has no business replacing the shop's sign.
+Completing is idempotent and confirms the object actually arrived, so a client
+that skipped the PUT is told so rather than queueing a job that fails three
+times against a missing file.
+
+Local development has no S3, so there the API does receive the bytes, through a
+route whose only authority is a signed grant naming one key, one content type
+and an expiry. It is a rehearsal of the S3 path rather than an open endpoint —
+the same trade as the dev mailer.
+
 **Media queue** — image validation and re-encoding run on the worker. Only the
 asset id travels through Redis; the bytes wait in the quarantine prefix, which
 is never publicly served. The security properties did not move: magic-byte
@@ -174,14 +189,11 @@ coupon management and the CSV tools.
 
 ### Not started
 
-- **Any way to upload an image over HTTP.** The pipeline underneath is built
-  and tested — validation, re-encoding, variants, quarantine, RLS, and now the
-  worker — but `MediaService` has no controller, so nothing outside the test
-  suite can reach it and a store owner cannot add a product photo. The plan's
-  §13.7 flow is three steps (`POST /media/upload-url` → presigned PUT straight
-  to quarantine → `POST /media/{id}/complete`), deliberately so that untrusted
-  bytes never pass through the API process. It needs S3 presigning, or a local
-  stand-in for it in development.
+- Real S3 presigning. The upload flow is built and exercised end to end, but
+  against local disk: `presignUpload` is implemented on `LocalDiskStorage`
+  only, so production still needs the S3 provider behind the same interface.
+- A UI for it. The endpoints exist; nothing in the web app calls them yet, so
+  adding a product photo still means driving the API by hand.
 - A distributed lock on scheduled jobs. Two workers would each run the expiry
   sweep; that is currently harmless only because every job is idempotent, and
   it must be fixed before running a second worker.
@@ -463,9 +475,8 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **The media upload endpoints** (§13.7): `POST /media/upload-url`, the
-   presigned PUT, and `POST /media/{assetId}/complete`. Everything behind them
-   is done; without them no image can be uploaded at all.
+1. **The image picker in the catalog UI**, now that the endpoints behind it
+   exist. Three steps and a poll, against `/stores/:storeId/media`.
 2. **A distributed lock on scheduled jobs**, before running a second worker.
    Note this does *not* apply to the mail queue: BullMQ hands each job to one
    consumer, so a second worker doubles mail throughput rather than doubling

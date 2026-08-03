@@ -7,8 +7,9 @@ import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { MediaQueue } from "../../infra/queue/queue.module.js";
 import { LocalDiskStorage } from "../../infra/storage/storage.provider.js";
+import { testStorage } from "../../infra/storage/test-storage.js";
 import { AuditService } from "../audit/audit.service.js";
-import { MediaService, type UploadResult } from "./media.service.js";
+import { MediaService, type MediaKind, type UploadResult } from "./media.service.js";
 import { randomUUID } from "node:crypto";
 
 const APP_DATABASE_URL =
@@ -19,6 +20,7 @@ const OWNER = "f0000000-0000-4000-8000-000000000001";
 
 let prisma: PrismaService;
 let media: MediaService;
+let storage: LocalDiskStorage;
 let queue: MediaQueue;
 let storageRoot: string;
 
@@ -30,7 +32,7 @@ const queueConfig = {
 beforeAll(async () => {
   storageRoot = await mkdtemp(join(tmpdir(), "bba-media-"));
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
-  const storage = new LocalDiskStorage(storageRoot, "http://localhost:3000/media");
+  storage = new LocalDiskStorage(testStorage(storageRoot));
   // A queue of its own, so a developer's running worker does not race this
   // suite for its jobs.
   queue = new MediaQueue(queueConfig, `test-media-${randomUUID().slice(0, 8)}`);
@@ -54,19 +56,40 @@ beforeEach(async () => {
 /**
  * Uploads, then runs the step the worker would run.
  *
- * `upload` only quarantines the bytes and enqueues now, so a test that asserts
- * on variants or on EXIF has to do the processing half too. Running it inline
- * here keeps those assertions about the pipeline rather than about timing —
- * the queue itself is covered separately in the media-queue suite.
+ * Walks the real §13.7 flow — ask for a grant, PUT to the key it names,
+ * complete — and then runs the step the worker would run. The processing half
+ * is inline so these assertions are about the pipeline rather than about
+ * timing; the queue itself is covered in the media-queue suite.
  */
-async function uploadAndProcess(
-  input: Parameters<MediaService["upload"]>[0],
-): Promise<UploadResult> {
-  const accepted = await media.upload(input);
+async function uploadAndProcess(input: {
+  body: Buffer;
+  declaredMime: string;
+  originalName?: string;
+  kind: MediaKind;
+  storeId?: string;
+  ownerUserId?: string;
+}): Promise<UploadResult> {
+  const { assetId, upload } = await media.requestUpload({
+    declaredMime: input.declaredMime,
+    declaredBytes: input.body.length,
+    originalName: input.originalName,
+    kind: input.kind,
+    storeId: input.storeId,
+    ownerUserId: input.ownerUserId,
+  });
+
+  // What the client does against the grant, and nothing more: the key comes
+  // from the signed token, never from the caller.
+  const { key } = storage.verifyGrant(upload.url.split("/").pop()!);
+  await storage.putQuarantine(key, input.body);
+
+  const scope = { storeId: input.storeId, userId: input.ownerUserId, isSuperAdmin: false };
+  const accepted = await media.completeUpload(assetId, scope);
   expect(accepted.status).toBe("PENDING");
+
   const [job] = await queue.waiting();
-  expect(job, "upload should have enqueued a job").toBeDefined();
-  return media.processQueued(accepted.assetId, job!.data.quarantineKey);
+  expect(job, "completing should have enqueued a job").toBeDefined();
+  return media.processQueued(assetId, job!.data.quarantineKey);
 }
 
 async function asAdmin<T>(work: (admin: PrismaService) => Promise<T>): Promise<T> {
@@ -227,8 +250,8 @@ describe("rejected uploads", () => {
       "utf8",
     );
     await expect(
-      media.upload({
-        body: svg,
+      media.requestUpload({
+        declaredBytes: svg.length,
         declaredMime: "image/svg+xml",
         kind: "BRANDING",
         storeId: STORE,
@@ -261,14 +284,19 @@ describe("rejected uploads", () => {
   it("rejects an oversized file before writing anything", async () => {
     const huge = Buffer.alloc(11 * 1024 * 1024, 1);
     await expect(
-      media.upload({ body: huge, declaredMime: "image/png", kind: "PRODUCT", storeId: STORE }),
+      media.requestUpload({
+        declaredBytes: huge.length,
+        declaredMime: "image/png",
+        kind: "PRODUCT",
+        storeId: STORE,
+      }),
     ).rejects.toBeInstanceOf(AppError);
   });
 
   it("rejects an empty file", async () => {
     await expect(
-      media.upload({
-        body: Buffer.alloc(0),
+      media.requestUpload({
+        declaredBytes: 0,
         declaredMime: "image/png",
         kind: "PRODUCT",
         storeId: STORE,

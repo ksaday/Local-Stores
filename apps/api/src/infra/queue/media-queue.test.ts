@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { LocalDiskStorage } from "../../infra/storage/storage.provider.js";
+import { testStorage } from "../../infra/storage/test-storage.js";
 import { AuditService } from "../../modules/audit/audit.service.js";
 import { MediaService } from "../../modules/media/media.service.js";
 import { MediaProcessor } from "../../worker/media-processor.js";
@@ -25,6 +26,7 @@ const config = {
 
 let prisma: PrismaService;
 let media: MediaService;
+let storage: LocalDiskStorage;
 let queue: MediaQueue;
 let processor: MediaProcessor | undefined;
 let storageRoot: string;
@@ -45,12 +47,8 @@ afterAll(async () => {
 beforeEach(async () => {
   queueName = `test-media-${randomUUID().slice(0, 8)}`;
   queue = new MediaQueue(config, queueName);
-  media = new MediaService(
-    prisma,
-    new LocalDiskStorage(storageRoot, "http://localhost:3100/media"),
-    new AuditService(prisma),
-    queue,
-  );
+  storage = new LocalDiskStorage(testStorage(storageRoot));
+  media = new MediaService(prisma, storage, new AuditService(prisma), queue);
   processor = undefined;
   await asAdmin((a) => a.$executeRaw`DELETE FROM media_assets WHERE store_id = ${STORE}`);
 });
@@ -102,6 +100,20 @@ async function until(check: () => boolean | Promise<boolean>, timeoutMs = 10_000
   throw new Error("condition never became true");
 }
 
+/** The client's half of §13.7: take a grant, PUT to the key it names, complete. */
+async function uploadThroughGrant(body: Buffer, mime = "image/png"): Promise<string> {
+  const { assetId, upload } = await media.requestUpload({
+    declaredMime: mime,
+    declaredBytes: body.length,
+    kind: "PRODUCT",
+    storeId: STORE,
+  });
+  const { key } = storage.verifyGrant(upload.url.split("/").pop()!);
+  await storage.putQuarantine(key, body);
+  await media.completeUpload(assetId, { storeId: STORE, isSuperAdmin: false });
+  return assetId;
+}
+
 function png(width = 400, height = 300): Promise<Buffer> {
   return sharp({ create: { width, height, channels: 3, background: "#cc4422" } })
     .png()
@@ -132,32 +144,20 @@ async function statusOf(assetId: string): Promise<string> {
 
 describe("the media queue", () => {
   it("returns before the image is processed, leaving it PENDING", async () => {
-    const result = await media.upload({
-      body: await png(),
-      declaredMime: "image/png",
-      kind: "PRODUCT",
-      storeId: STORE,
-    });
+    const assetId = await uploadThroughGrant(await png());
 
     // The point of the whole change: the caller is not waiting on sharp.
-    expect(result.status).toBe("PENDING");
-    expect(result.url).toBeNull();
-    expect(await statusOf(result.assetId)).toBe("PENDING");
+    expect(await statusOf(assetId)).toBe("PENDING");
 
     const [job] = await queue.waiting();
     expect(job!.name).toBe(PROCESS_IMAGE_JOB);
-    expect(job!.data.assetId).toBe(result.assetId);
+    expect(job!.data.assetId).toBe(assetId);
     // The bytes stay in quarantine; only the id travels through Redis.
     expect(JSON.stringify(job!.data).length).toBeLessThan(200);
   });
 
   it("processes the image once the worker picks it up", async () => {
-    const result = await media.upload({
-      body: await png(),
-      declaredMime: "image/png",
-      kind: "PRODUCT",
-      storeId: STORE,
-    });
+    const assetId = await uploadThroughGrant(await png());
 
     const [queued] = await queue.waiting();
     const quarantineKey = queued!.data.quarantineKey;
@@ -165,9 +165,9 @@ describe("the media queue", () => {
     processor = new MediaProcessor(media, config, queueName);
     processor.start();
 
-    await until(async () => (await statusOf(result.assetId)) === "READY");
+    await until(async () => (await statusOf(assetId)) === "READY");
 
-    const ready = await media.status(result.assetId, { storeId: STORE, isSuperAdmin: false });
+    const ready = await media.status(assetId, { storeId: STORE, isSuperAdmin: false });
     expect(ready.status).toBe("READY");
     expect(ready.url).toContain("original.webp");
     // The unvalidated copy does not outlive the job that validated it.
@@ -178,36 +178,26 @@ describe("the media queue", () => {
     // Declared as a PNG, actually a shell script. The magic-byte check runs on
     // the worker now, but it still runs before anything reaches the public
     // prefix — that is the property that must not have moved.
-    const result = await media.upload({
-      body: Buffer.from("#!/bin/sh\nrm -rf /\n"),
-      declaredMime: "image/png",
-      kind: "PRODUCT",
-      storeId: STORE,
-    });
+    const assetId = await uploadThroughGrant(Buffer.from("#!/bin/sh\nrm -rf /\n"));
 
     processor = new MediaProcessor(media, config, queueName);
     processor.start();
 
-    await until(async () => (await statusOf(result.assetId)) === "REJECTED");
+    await until(async () => (await statusOf(assetId)) === "REJECTED");
 
     // A verdict, not a failure: retrying would decode the same bytes to the
     // same answer, so the job completed rather than exhausting its attempts.
     expect(await queue.deadLettered()).toBe(0);
-    const rejected = await media.status(result.assetId, { storeId: STORE, isSuperAdmin: false });
+    const rejected = await media.status(assetId, { storeId: STORE, isSuperAdmin: false });
     expect(rejected.reason).toBeTruthy();
     expect(rejected.url).toBeNull();
   });
 
   it("cleans up after an asset deleted before its job ran", async () => {
-    const result = await media.upload({
-      body: await png(),
-      declaredMime: "image/png",
-      kind: "PRODUCT",
-      storeId: STORE,
-    });
+    const assetId = await uploadThroughGrant(await png());
     const [queued] = await queue.waiting();
     const quarantineKey = queued!.data.quarantineKey;
-    await asAdmin((a) => a.$executeRaw`DELETE FROM media_assets WHERE id = ${result.assetId}`);
+    await asAdmin((a) => a.$executeRaw`DELETE FROM media_assets WHERE id = ${assetId}`);
 
     processor = new MediaProcessor(media, config, queueName);
     processor.start();
