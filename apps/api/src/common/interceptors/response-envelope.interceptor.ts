@@ -9,6 +9,19 @@ import { map, type Observable } from "rxjs";
 /** Opt a route out of the envelope (SSE streams, file downloads, print docs). */
 export const RAW_RESPONSE = Symbol("RAW_RESPONSE");
 
+/**
+ * Marks a route whose body is not JSON.
+ *
+ * Without it a CSV download arrives as `{"data":"sku,name\n..."}` — the
+ * Content-Disposition still says `catalog.csv`, so a spreadsheet opens a file
+ * of JSON. The symbol existed for this from the start; the decorator makes it
+ * reachable rather than something each caller has to know to set by hand.
+ */
+export const RawResponse = (): MethodDecorator => (_target, _key, descriptor) => {
+  Reflect.defineMetadata(RAW_RESPONSE, true, descriptor.value as object);
+  return descriptor;
+};
+
 interface Paginated {
   data: unknown;
   meta?: unknown;

@@ -6,6 +6,7 @@ import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { CheckoutService } from "./checkout.service.js";
 import { ConfiguredRateTaxProvider } from "./tax.provider.js";
+import { CouponsService } from "../coupons/coupons.service.js";
 
 /**
  * Runs as `bba_app`, the RLS-restricted role. Checkout crosses more policy
@@ -36,6 +37,7 @@ beforeAll(() => {
     prisma,
     new ConfiguredRateTaxProvider(async () => ({ rateBps: TAX_BPS, name: "IL sales tax" })),
     outbox,
+    new CouponsService(prisma, new AuditService(prisma)),
   );
   orders = new OrdersService(prisma, new AuditService(prisma), outbox);
 });

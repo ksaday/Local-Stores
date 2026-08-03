@@ -38,6 +38,8 @@ export default async function OpsLayout({
       nav={[
         { href: `${base}/orders`, label: "Orders" },
         { href: `${base}/till`, label: "Till" },
+        { href: `${base}/catalog`, label: "Catalog" },
+        { href: `${base}/coupons`, label: "Coupons" },
         { href: `${base}/settings`, label: "Settings" },
         { href: `${base}/staff`, label: "Team" },
       ]}

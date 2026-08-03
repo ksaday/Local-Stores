@@ -185,6 +185,7 @@ export interface CartView {
 export interface Quote {
   lines: { productName: string; qty: number; lineTotalCents: number }[];
   subtotalCents: number;
+  discountCents: number;
   taxCents: number;
   taxDescription: string;
   deliveryFeeCents: number;
@@ -193,6 +194,8 @@ export interface Quote {
   currency: string;
   deliveryProblem: string | null;
   etaMinutes: number | null;
+  couponProblem: { kind: string; message: string } | null;
+  couponCode: string | null;
 }
 
 /**

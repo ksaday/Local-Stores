@@ -5,6 +5,7 @@ import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { Shopper } from "../cart/cart.service.js";
 import { OutboxService } from "../../infra/outbox/outbox.service.js";
+import { CouponsService, type CouponProblem } from "../coupons/coupons.service.js";
 import { TaxProvider } from "./tax.provider.js";
 
 export type Fulfillment = "PICKUP" | "DELIVERY";
@@ -23,6 +24,7 @@ export interface QuoteRequest {
   fulfillment: Fulfillment;
   address?: DeliveryAddress | null;
   tipCents?: number;
+  couponCode?: string | null;
 }
 
 export interface Quote {
@@ -47,6 +49,9 @@ export interface Quote {
   /** Set when delivery was asked for but cannot be provided to that address. */
   deliveryProblem: string | null;
   etaMinutes: number | null;
+  /** Set when a code was supplied but cannot be used, with the reason. */
+  couponProblem: CouponProblem | null;
+  couponCode: string | null;
 }
 
 export interface PlaceOrderRequest extends QuoteRequest {
@@ -71,6 +76,7 @@ export class CheckoutService {
     private readonly prisma: PrismaService,
     private readonly tax: TaxProvider,
     private readonly outbox: OutboxService,
+    private readonly coupons: CouponsService,
   ) {}
 
   /**
@@ -92,6 +98,11 @@ export class CheckoutService {
     const subtotalCents = lines.reduce((sum, l) => sum + l.lineTotalCents, 0);
     const tipCents = normalizeTip(request.tipCents, subtotalCents);
 
+    const coupon = request.couponCode
+      ? await this.coupons.quote(storeId, request.couponCode, subtotalCents, shopper.kind === "user" ? shopper.userId : null)
+      : { quote: null, problem: null };
+    const discountCents = coupon.quote?.discountCents ?? 0;
+
     const taxResult = await this.tax.quote({
       storeId,
       lines: lines.map((l) => ({ variantId: l.variantId, unitPriceCents: l.unitPriceCents, qty: l.qty })),
@@ -105,12 +116,12 @@ export class CheckoutService {
     const priced = lines.map((line, i) => ({ ...line, taxCents: taxResult.lineTaxCents[i] ?? 0 }));
 
     const totalCents =
-      subtotalCents - 0 + taxResult.totalTaxCents + delivery.feeCents + tipCents;
+      subtotalCents - discountCents + taxResult.totalTaxCents + delivery.feeCents + tipCents;
 
     return {
       lines: priced,
       subtotalCents,
-      discountCents: 0,
+      discountCents,
       taxCents: taxResult.totalTaxCents,
       taxDescription: taxResult.description,
       deliveryFeeCents: delivery.feeCents,
@@ -119,6 +130,8 @@ export class CheckoutService {
       currency: store.currency,
       deliveryProblem: delivery.problem,
       etaMinutes: delivery.etaMinutes,
+      couponProblem: coupon.problem,
+      couponCode: coupon.quote?.code ?? null,
     };
   }
 
@@ -252,6 +265,27 @@ export class CheckoutService {
       const subtotalCents = lines.reduce((sum, l) => sum + l.lineTotalCents, 0);
       const tipCents = normalizeTip(request.tipCents, subtotalCents);
 
+      // Re-validated inside the transaction, not trusted from the quote.
+      // Between the shopper seeing a discount and clicking Place Order, a
+      // limited coupon can be exhausted by somebody else — and only this check
+      // is binding.
+      let couponId: string | null = null;
+      let couponCode: string | null = null;
+      let discountCents = 0;
+      if (request.couponCode) {
+        const result = await this.coupons.quote(
+          storeId, request.couponCode, subtotalCents, userId ?? null, tx,
+        );
+        if (result.problem) {
+          // Refused rather than silently dropped: charging more than the
+          // shopper agreed to, without saying why, is worse than failing.
+          throw AppError.validation(result.problem.message);
+        }
+        couponId = result.quote!.couponId;
+        couponCode = result.quote!.code;
+        discountCents = result.quote!.discountCents;
+      }
+
       const taxResult = await this.tax.quote({
         storeId,
         lines,
@@ -262,7 +296,8 @@ export class CheckoutService {
         deliveryFeeCents: delivery.feeCents,
       });
 
-      const totalCents = subtotalCents + taxResult.totalTaxCents + delivery.feeCents + tipCents;
+      const totalCents =
+        subtotalCents - discountCents + taxResult.totalTaxCents + delivery.feeCents + tipCents;
 
       // 4. Order number. The UPDATE takes a row lock, so numbers are
       //    gap-free and unique per store without a global sequence.
@@ -281,17 +316,17 @@ export class CheckoutService {
           id, store_id, order_number, customer_id, channel, fulfillment, status,
           subtotal_cents, discount_cents, tax_cents, delivery_fee_cents, tip_cents,
           total_cents, currency, delivery_address, customer_note, contact_email,
-          contact_phone, guest_token, idempotency_key, placed_at, expires_at,
-          created_at, updated_at
+          contact_phone, guest_token, idempotency_key, coupon_id, coupon_code,
+          placed_at, expires_at, created_at, updated_at
         ) VALUES (
           ${orderId}, ${storeId}, ${orderNumber}, ${userId ?? null}, 'ONLINE',
           ${request.fulfillment}::"Fulfillment", 'PENDING',
-          ${subtotalCents}, 0, ${taxResult.totalTaxCents}, ${delivery.feeCents}, ${tipCents},
+          ${subtotalCents}, ${discountCents}, ${taxResult.totalTaxCents}, ${delivery.feeCents}, ${tipCents},
           ${totalCents}, ${store.currency},
           ${request.address ? JSON.stringify(request.address) : null}::jsonb,
           ${request.customerNote ?? null}, ${request.contactEmail ?? null},
           ${request.contactPhone ?? null}, ${guestToken}, ${request.idempotencyKey},
-          now(), ${expiresAt}, now(), now()
+          ${couponId}, ${couponCode}, now(), ${expiresAt}, now(), now()
         )
       `;
 
@@ -324,6 +359,14 @@ export class CheckoutService {
       // 7. Retire the cart. Marked converted rather than deleted so the order
       //    can be traced back to what the shopper actually assembled.
       await tx.$executeRaw`UPDATE carts SET status = 'CONVERTED', updated_at = now() WHERE id = ${cartId}`;
+
+      // In the same transaction, so the usage count can never drift from the
+      // orders that actually used the code.
+      if (couponId) {
+        await this.coupons.redeemIn(tx, {
+          couponId, storeId, orderId, userId: userId ?? null, amountCents: discountCents,
+        });
+      }
 
       // Written inside the transaction, not after it. The event and the order
       // commit together, so the queue can never be told about an order that

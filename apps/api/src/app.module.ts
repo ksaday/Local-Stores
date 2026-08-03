@@ -10,6 +10,7 @@ import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
 import { BillingModule } from "./modules/billing/billing.module.js";
 import { CartModule } from "./modules/cart/cart.module.js";
+import { CouponsModule } from "./modules/coupons/coupons.module.js";
 import { CatalogModule } from "./modules/catalog/catalog.module.js";
 import { CheckoutModule } from "./modules/checkout/checkout.module.js";
 import { OrderEventsModule } from "./modules/orders/order-events.module.js";
@@ -42,6 +43,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     StorefrontModule,
     OrderEventsModule,
     CartModule,
+    CouponsModule,
     CheckoutModule,
     OrdersModule,
     PaymentsModule,

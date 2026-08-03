@@ -46,6 +46,7 @@ export async function quoteOrder(_prev: CheckoutState, formData: FormData): Prom
         fulfillment,
         address: fulfillment === "DELIVERY" ? readAddress(formData) : null,
         tipCents: Math.max(0, Math.round(Number(formData.get("tipCents") ?? 0))),
+        couponCode: String(formData.get("couponCode") ?? "").trim() || null,
       },
     });
     return { quote, error: null, fieldErrors: {} };
@@ -77,6 +78,7 @@ export async function placeOrder(_prev: CheckoutState, formData: FormData): Prom
         fulfillment,
         address: fulfillment === "DELIVERY" ? readAddress(formData) : null,
         tipCents: Math.max(0, Math.round(Number(formData.get("tipCents") ?? 0))),
+        couponCode: String(formData.get("couponCode") ?? "").trim() || null,
         contactEmail: String(formData.get("contactEmail") ?? "").trim() || null,
         contactPhone: String(formData.get("contactPhone") ?? "").trim() || null,
         customerNote: String(formData.get("customerNote") ?? "").trim() || null,

@@ -5,6 +5,7 @@ import { AuditService } from "../audit/audit.service.js";
 import { CartService, type Shopper } from "../cart/cart.service.js";
 import { CheckoutService } from "../checkout/checkout.service.js";
 import { ConfiguredRateTaxProvider } from "../checkout/tax.provider.js";
+import { CouponsService } from "../coupons/coupons.service.js";
 import { OutboxService } from "../../infra/outbox/outbox.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { BillingService } from "../billing/billing.service.js";
@@ -56,7 +57,7 @@ beforeEach(async () => {
   orders = new OrdersService(prisma, audit, outbox);
   webhooks = new StripeWebhooksService(prisma, provider, orders, billing);
   cart = new CartService(prisma);
-  checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox);
+  checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox, new CouponsService(prisma, new AuditService(prisma)));
 });
 
 async function asAdmin<T>(work: (db: PrismaService) => Promise<T>): Promise<T> {

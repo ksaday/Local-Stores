@@ -129,6 +129,45 @@ export function CheckoutForm({
 
           <fieldset>
             <legend className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
+              Discount code
+            </legend>
+            <div className="mt-2 flex flex-wrap items-start gap-3">
+              <label className="flex-1">
+                <span className="sr-only">Discount code</span>
+                <input
+                  name="couponCode"
+                  // Codes are printed in capitals on flyers, and the server
+                  // upper-cases anyway — matching that here avoids a field
+                  // that looks like it did not take.
+                  className="w-full rounded-card border border-line bg-surface px-3 py-2 uppercase text-ink"
+                  placeholder="Have a code?"
+                />
+              </label>
+              <button
+                type="submit"
+                formAction={runQuote}
+                className="rounded-card border border-line px-4 py-2 text-sm font-medium text-ink"
+              >
+                Apply
+              </button>
+            </div>
+
+            {/* The reason, not just a refusal — "spend $20 more" is something
+                a shopper can act on. */}
+            {quote?.couponProblem && (
+              <p role="alert" className="mt-2 text-sm text-danger">
+                {quote.couponProblem.message}
+              </p>
+            )}
+            {quote?.couponCode && !quote.couponProblem && (
+              <p className="mt-2 text-sm text-success">
+                {quote.couponCode} applied.
+              </p>
+            )}
+          </fieldset>
+
+          <fieldset>
+            <legend className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
               Add a tip
             </legend>
             <p className="mt-1 text-sm text-ink-muted">Goes to the shop, in full.</p>
@@ -183,6 +222,12 @@ export function CheckoutForm({
         {quote ? (
           <dl className="mt-4 space-y-2 rounded-card border border-line p-5 text-sm">
             <Row label="Subtotal" value={money(quote.subtotalCents, currency)} />
+            {quote.discountCents > 0 && (
+              <Row
+                label={quote.couponCode ? `Discount (${quote.couponCode})` : "Discount"}
+                value={`−${money(quote.discountCents, currency)}`}
+              />
+            )}
             {quote.deliveryFeeCents > 0 && (
               <Row label="Delivery" value={money(quote.deliveryFeeCents, currency)} />
             )}

@@ -1,12 +1,13 @@
 import { Module } from "@nestjs/common";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { CartModule } from "../cart/cart.module.js";
+import { CouponsModule } from "../coupons/coupons.module.js";
 import { CheckoutController } from "./checkout.controller.js";
 import { CheckoutService } from "./checkout.service.js";
 import { ConfiguredRateTaxProvider, TaxProvider } from "./tax.provider.js";
 
 @Module({
-  imports: [CartModule],
+  imports: [CartModule, CouponsModule],
   controllers: [CheckoutController],
   providers: [
     CheckoutService,

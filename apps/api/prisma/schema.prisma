@@ -169,6 +169,7 @@ model Store {
   customerRelations CustomerStoreRelation[]
   refunds           Refund[]
   subscription      StoreSubscription?
+  coupons           Coupon[]
 
   @@map("stores")
 }
@@ -681,6 +682,11 @@ model Order {
   contactEmail    String? @map("contact_email")
   contactPhone    String? @map("contact_phone")
 
+  couponId   String? @map("coupon_id")
+  /// Snapshotted alongside the id: a receipt should still show which code was
+  /// used after the coupon itself is deleted.
+  couponCode String? @map("coupon_code")
+
   /// Lets a guest reach their own order later without an account.
   guestToken String? @map("guest_token")
 
@@ -695,9 +701,11 @@ model Order {
 
   store    Store                @relation(fields: [storeId], references: [id])
   customer User?                @relation(fields: [customerId], references: [id])
-  items    OrderItem[]
-  history  OrderStatusHistory[]
-  payments Payment[]
+  items       OrderItem[]
+  history     OrderStatusHistory[]
+  payments    Payment[]
+  coupon      Coupon?            @relation(fields: [couponId], references: [id])
+  redemptions CouponRedemption[]
 
   @@unique([storeId, orderNumber])
   @@index([storeId, status, placedAt])
@@ -952,4 +960,59 @@ enum SubscriptionStatus {
   ACTIVE
   PAST_DUE
   CANCELED
+}
+
+// ---------------------------------------------------------------------------
+// Coupons (FR-CAT-06)
+// ---------------------------------------------------------------------------
+
+model Coupon {
+  id               String     @id @default(uuid())
+  storeId          String     @map("store_id")
+  /// citext: shoppers type these by hand off a flyer.
+  code             String     @db.Citext
+  kind             CouponKind
+  /// Basis points for PERCENT, cents for FIXED. One column because a coupon is
+  /// never both, and two nullable ones would let it be neither.
+  value            Int
+  minOrderCents    Int        @default(0) @map("min_order_cents")
+  startsAt         DateTime?  @map("starts_at")
+  endsAt           DateTime?  @map("ends_at")
+  maxRedemptions   Int?       @map("max_redemptions")
+  perCustomerLimit Int?       @map("per_customer_limit")
+  active           Boolean    @default(true)
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+  deletedAt        DateTime?  @map("deleted_at")
+
+  store       Store               @relation(fields: [storeId], references: [id])
+  redemptions CouponRedemption[]
+  orders      Order[]
+
+  @@map("coupons")
+}
+
+enum CouponKind {
+  PERCENT
+  FIXED
+}
+
+/// Append-only: the usage count depends on it.
+model CouponRedemption {
+  id          String   @id @default(uuid())
+  couponId    String   @map("coupon_id")
+  storeId     String   @map("store_id")
+  orderId     String   @map("order_id")
+  /// NULL for a guest — the per-customer limit can only bind someone we can
+  /// identify, which is a real limitation rather than an oversight.
+  userId      String?  @map("user_id")
+  amountCents Int      @map("amount_cents")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, orderId])
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
 }
