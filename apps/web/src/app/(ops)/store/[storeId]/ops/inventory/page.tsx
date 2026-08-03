@@ -65,6 +65,12 @@ export default async function InventoryPage({
                 Clear
               </Link>
             )}
+            <Link
+              href={`/store/${storeId}/ops/inventory/counts`}
+              className="ml-auto rounded-card border border-line px-5 py-2 text-sm font-medium text-ink"
+            >
+              Count the shop
+            </Link>
           </form>
 
           {rows.length === 0 ? (

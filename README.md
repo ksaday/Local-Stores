@@ -102,7 +102,10 @@ posting — otherwise a sale made mid-count is folded into the variance and
 blamed on whoever was holding the clipboard. A line that matched writes no
 movement at all. One open count per store, enforced by a partial unique index
 rather than by a check in code, because two people counting the same shelves
-post the same difference twice.
+post the same difference twice. The screen is a
+workspace you can leave and come back to: pick a shelf, type what is on it, and
+the quantity box keeps focus, because this is used standing up with a phone in
+one hand.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order
