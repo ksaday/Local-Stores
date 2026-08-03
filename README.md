@@ -87,7 +87,10 @@ A daily low-stock digest goes to the owner and any inventory managers — one
 list per shop rather than an alert per line, because a shop that sells out of
 six things on a Saturday does not need six emails. Counts are of *sellable*
 stock, so what is already promised to uncollected orders does not keep a line
-off the list. Count sessions are not built.
+off the list. A Stock screen lists every sellable line with what is
+sellable rather than merely present, flags what is under its reorder level, and
+puts receiving, adjusting, tracking settings and the movement history on the
+row itself. Count sessions are not built.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order
