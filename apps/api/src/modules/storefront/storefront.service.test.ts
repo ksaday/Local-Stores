@@ -28,7 +28,7 @@ let catalog: CatalogService;
 beforeAll(async () => {
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   storefront = new StorefrontService(prisma, new LocalDiskStorage(testStorage(".storage", MEDIA_BASE_URL)));
-  catalog = new CatalogService(prisma, new AuditService(prisma));
+  catalog = new CatalogService(prisma, new AuditService(prisma), new LocalDiskStorage(testStorage(".storage")));
 });
 
 afterAll(async () => {
@@ -82,7 +82,7 @@ async function addAsset(
     await admin.$executeRaw`
       INSERT INTO media_assets (id,store_id,kind,status,storage_key,mime,bytes,width,height,is_private,created_at,updated_at)
       VALUES (${id},${storeId},'PRODUCT',${opts.status ?? "READY"}::"MediaStatus",
-              ${`img/${id}.webp`},'image/webp',1024,800,600,${opts.isPrivate ?? false},now(),now())`;
+              ${`product/${id}`},'image/webp',1024,800,600,${opts.isPrivate ?? false},now(),now())`;
   });
   return id;
 }
@@ -284,7 +284,7 @@ describe("images", () => {
 
     const { products } = await storefront.listProducts("test-morse-ave-bakery", {});
     expect(products[0]!.image).toMatchObject({
-      url: `${MEDIA_BASE_URL}/public/img/${assetId}.webp`,
+      url: `${MEDIA_BASE_URL}/public/product/${assetId}/original.webp`,
       alt: "A round loaf",
       width: 800,
       height: 600,

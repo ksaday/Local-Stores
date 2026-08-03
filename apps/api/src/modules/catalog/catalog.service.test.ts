@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AppError } from "../../common/errors/app-error.js";
+import { LocalDiskStorage } from "../../infra/storage/storage.provider.js";
+import { testStorage } from "../../infra/storage/test-storage.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { CatalogService } from "./catalog.service.js";
@@ -17,7 +19,7 @@ let catalog: CatalogService;
 
 beforeAll(async () => {
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
-  catalog = new CatalogService(prisma, new AuditService(prisma));
+  catalog = new CatalogService(prisma, new AuditService(prisma), new LocalDiskStorage(testStorage(".storage")));
 });
 
 afterAll(async () => {

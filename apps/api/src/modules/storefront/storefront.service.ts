@@ -63,7 +63,7 @@ export class StorefrontService {
     return new Map(
       assets.map((a) => [
         a.id,
-        { url: this.storage.publicUrl(a.storageKey), width: a.width, height: a.height },
+        { url: this.storage.publicVariantUrl(a.storageKey), width: a.width, height: a.height },
       ]),
     );
   }

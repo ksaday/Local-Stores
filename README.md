@@ -121,6 +121,12 @@ That is what makes the live queue correct with more than one API process and
 across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
 and a dead-letter check (5m).
 
+**Product photos** — a product list in the catalog, a page per product, and an
+image picker that walks the upload flow: the browser PUTs the file to storage
+itself, then polls until the worker has processed it. This is the only place in
+the app where the browser talks to anything but the BFF, which is what the
+whole three-step design is for.
+
 **Media upload** — the three-step flow from §13.7: ask for an upload URL, PUT
 the file straight to storage, then say you have finished. The API never
 receives the bytes in production — it sees a declared type and a byte count,
@@ -192,8 +198,13 @@ coupon management and the CSV tools.
 - Real S3 presigning. The upload flow is built and exercised end to end, but
   against local disk: `presignUpload` is implemented on `LocalDiskStorage`
   only, so production still needs the S3 provider behind the same interface.
-- A UI for it. The endpoints exist; nothing in the web app calls them yet, so
-  adding a product photo still means driving the API by hand.
+- Choosing a variant per context. Listings and detail pages both serve
+  `original.webp`; the worker also writes thumb, medium and large, and nothing
+  picks between them yet.
+- Revalidating storefront pages on a catalog change. They cache for 60 seconds,
+  so a new photo takes up to a minute to appear publicly. `storeTag` exists for
+  this and nothing calls `revalidateTag` — true of every catalog edit, not just
+  photos.
 - A distributed lock on scheduled jobs. Two workers would each run the expiry
   sweep; that is currently harmless only because every job is idempotent, and
   it must be fixed before running a second worker.
@@ -475,17 +486,15 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **The image picker in the catalog UI**, now that the endpoints behind it
-   exist. Three steps and a poll, against `/stores/:storeId/media`.
-2. **A distributed lock on scheduled jobs**, before running a second worker.
+1. **A distributed lock on scheduled jobs**, before running a second worker.
    Note this does *not* apply to the mail queue: BullMQ hands each job to one
    consumer, so a second worker doubles mail throughput rather than doubling
    the mail.
-3. **Inventory management surfaces** — receiving, count sessions, low-stock
+2. **Inventory management surfaces** — receiving, count sessions, low-stock
    alerts. The ledger and reservation semantics they build on are done.
-4. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-5. **Phases 9–12**: delivery, reporting, hardening, deployment.
+4. **Phases 9–12**: delivery, reporting, hardening, deployment.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

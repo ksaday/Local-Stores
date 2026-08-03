@@ -44,7 +44,22 @@ export abstract class StorageProvider {
   abstract putProcessed(key: string, body: Buffer, isPrivate: boolean): Promise<void>;
 
   abstract publicUrl(key: string): string;
+
+  /**
+   * URL of one processed variant of an asset.
+   *
+   * `storageKey` names a folder, not a file: the worker writes `thumb.webp`,
+   * `medium.webp`, `large.webp` and `original.webp` underneath it. Passing the
+   * key straight to `publicUrl` yields a directory and a broken image, which is
+   * exactly the bug this method exists to stop anyone writing twice.
+   */
+  publicVariantUrl(storageKey: string, variant: MediaVariant = "original"): string {
+    return this.publicUrl(`${storageKey}/${variant}.webp`);
+  }
 }
+
+/** The sizes the worker writes for every accepted image. */
+export type MediaVariant = "thumb" | "medium" | "large" | "original";
 
 export interface LocalDiskOptions {
   root: string;

@@ -1,14 +1,79 @@
 import type { Metadata } from "next";
-import { Card } from "@/components/shell";
+import Link from "next/link";
+import { Card, EmptyState, StatusBadge } from "@/components/shell";
+import { api } from "@/lib/api";
 import { ImportForm } from "./import-form";
 
 export const metadata: Metadata = { title: "Catalog" };
+export const dynamic = "force-dynamic";
+
+interface ProductRow {
+  id: string;
+  name: string;
+  brand: string | null;
+  sku: string | null;
+  status: string;
+  images: { url: string | null; alt: string | null }[];
+  variants: { priceCents: number }[];
+}
 
 export default async function CatalogPage({ params }: { params: Promise<{ storeId: string }> }) {
   const { storeId } = await params;
+  const products = await api<ProductRow[]>(`/stores/${storeId}/products`, { revalidate: false });
 
   return (
     <div className="mt-8 space-y-6">
+      <Card title="Your products" description="Open one to manage its photos.">
+        {products.length === 0 ? (
+          <EmptyState
+            title="No products yet"
+            hint="Import a spreadsheet below to get started."
+          />
+        ) : (
+          <ul className="divide-y divide-line">
+            {products.map((product) => {
+              const price = product.variants[0]?.priceCents;
+              const thumb = product.images[0];
+              return (
+                <li key={product.id}>
+                  <Link
+                    href={`/store/${storeId}/ops/catalog/products/${product.id}`}
+                    className="flex items-center gap-4 py-3"
+                  >
+                    {/* A fixed-size slot whether or not there is a photo, so the
+                        rows do not jump around as images are added. */}
+                    <span className="size-12 shrink-0 overflow-hidden rounded-card border border-line bg-surface">
+                      {thumb?.url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={thumb.url}
+                          alt={thumb.alt ?? ""}
+                          className="size-full object-cover"
+                        />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-ink">{product.name}</span>
+                      <span className="block truncate text-sm text-ink-muted">
+                        {[
+                          product.brand,
+                          product.sku && `SKU ${product.sku}`,
+                          price !== undefined && `$${(price / 100).toFixed(2)}`,
+                          !thumb?.url && "No photo",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </span>
+                    <StatusBadge status={product.status} />
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
       <Card
         title="Export your catalog"
         description="A spreadsheet of everything you sell."

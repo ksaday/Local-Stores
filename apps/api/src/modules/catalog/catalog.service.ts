@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { StorageProvider } from "../../infra/storage/storage.provider.js";
 import { AuditService } from "../audit/audit.service.js";
 
 export type ProductStatus = "DRAFT" | "ACTIVE" | "ARCHIVED";
@@ -22,7 +23,38 @@ export class CatalogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly storage: StorageProvider,
   ) {}
+
+  /**
+   * Turns image rows into something renderable.
+   *
+   * The row holds an asset id; the URL is built from the asset's storage key,
+   * which is the storage layer's business and not a column anyone should be
+   * copying around. Assets that are still PENDING or were REJECTED resolve to
+   * nothing, so an image that cannot be displayed is absent rather than a
+   * broken one.
+   */
+  private async withImageUrls<T extends { images: { mediaAssetId: string }[] }>(
+    storeId: string,
+    rows: T[],
+  ): Promise<(T & { images: (T["images"][number] & { url: string | null })[] })[]> {
+    const ids = [...new Set(rows.flatMap((r) => r.images.map((i) => i.mediaAssetId)))];
+    if (ids.length === 0) return rows as never;
+
+    const assets = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.mediaAsset.findMany({
+        where: { id: { in: ids }, status: "READY" },
+        select: { id: true, storageKey: true },
+      }),
+    );
+    const urls = new Map(assets.map((a) => [a.id, this.storage.publicVariantUrl(a.storageKey)]));
+
+    return rows.map((row) => ({
+      ...row,
+      images: row.images.map((image) => ({ ...image, url: urls.get(image.mediaAssetId) ?? null })),
+    })) as never;
+  }
 
   // ── Categories ───────────────────────────────────────────────────────────
 
@@ -144,7 +176,7 @@ export class CatalogService {
     storeId: string,
     filters: { status?: ProductStatus; categoryId?: string; q?: string } = {},
   ) {
-    return this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+    const products = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
       tx.product.findMany({
         where: {
           storeId,
@@ -169,6 +201,7 @@ export class CatalogService {
         take: 200,
       }),
     );
+    return this.withImageUrls(storeId, products);
   }
 
   async getProduct(storeId: string, productId: string) {
@@ -183,7 +216,8 @@ export class CatalogService {
       }),
     );
     if (!product) throw AppError.notFound();
-    return product;
+    const [withUrls] = await this.withImageUrls(storeId, [product]);
+    return withUrls!;
   }
 
   /**
