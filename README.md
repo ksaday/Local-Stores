@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 460 tests passing. A shop can list products, take an order online or over
+in.** 473 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -74,10 +74,16 @@ with a `TaxProvider` seam; the order-creation transaction with stock
 reservation, per-store order numbers and idempotency; the order state machine
 with role-gated transitions; cash payment; the PENDING expiry sweeper.
 
-**Inventory (the checkout-critical part)** — `stock_levels` derived from an
-append-only `stock_movements` ledger, with reservation semantics. Receiving,
-count sessions and low-stock alerts belong to the inventory phase and are not
-built.
+**Inventory** — `stock_levels` derived from an append-only `stock_movements`
+ledger, with reservation semantics. Receiving, adjustments with reason codes,
+per-line tracking and reorder points, and the movement history staff actually
+read. Nothing writes `on_hand` directly: the level is maintained by a trigger
+over the ledger, so it is provably the sum of its movements rather than a
+second number that drifts. A correction is a new movement, never an edit —
+both the mistake and the fix stay visible. Damage is its own movement type
+rather than a reason code, because "how much did we break" and "how far out was
+the count" are different questions and only one is a supplier conversation.
+Count sessions and low-stock alerts are not built.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order
