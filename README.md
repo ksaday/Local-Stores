@@ -28,9 +28,13 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phases 2, 4, 5, 7 and 8 complete; the worker and transactional outbox are
-in.** 356 tests passing. A shop can list products, take an order online or over
-the counter, work the queue, take cash or card, refund, and print a receipt.
+**Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
+in.** 425 tests passing. A shop can list products, take an order online or over
+the counter, work the queue, take cash or card, refund, print a receipt, run a
+promotion, and be billed for the platform itself.
+
+Stripe has been exercised against real test keys end to end — a real Connect
+account, real charges, real refunds — not only against the fake provider.
 
 ### Done
 
@@ -117,10 +121,28 @@ That is what makes the live queue correct with more than one API process and
 across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
 and a dead-letter check (5m).
 
+**Billing** — the $49/month subscription that is the platform's revenue,
+deliberately separate from Connect: that is a store being paid by its
+customers, this is the store owner paying us. One plan, no gating machinery.
+A 30-day trial with no card up front; a failed payment starts a seven-day
+grace period, then the storefront is hidden and nothing else — catalog, orders
+and customers stay, so a shop that lapses and returns finds its products
+waiting. Paying reinstates a store we suspended, and only one we suspended.
+
+**Coupons** — percent or fixed, minimum spend, date windows, total and
+per-customer limits. Validated at quote time for the shopper and again inside
+the order transaction, which is the binding one. The discount is capped at the
+subtotal, and an invalid code refuses the order rather than silently charging
+full price.
+
+**CSV import/export** — the catalog as a spreadsheet, with prices as ordinary
+amounts. Import matches on SKU, lands everything in DRAFT, and is row-by-row:
+a file with two bad rows imports the rest and reports the two by line number.
+
 **Web** — Next.js App Router BFF: auth flows, the Super Admin console, store
 settings and staff management, the public storefront, the customer purchase
-flow (cart, checkout, card payment, receipt), the staff order queue, and the
-till.
+flow (cart, checkout, card payment, receipt), the staff order queue, the till,
+coupon management and the CSV tools.
 
 ### Not started
 
@@ -130,16 +152,13 @@ till.
 - A distributed lock on scheduled jobs. Two workers would each run the expiry
   sweep; that is currently harmless only because every job is idempotent, and
   it must be fixed before running a second worker.
-- Coupons/promotions and catalog CSV import/export (rest of Phase 5)
 - Geocoding, so delivery addresses can be matched to a zone. Checkout says
   plainly that it cannot place an address rather than guessing a fee.
-- **Stripe against real keys.** Everything is built and tested against a fake
-  provider plus locally-signed webhooks, and the signature path is verified
-  end-to-end with a genuine HMAC — but no request has ever reached Stripe.
-  Walk one order through onboarding → card → refund with test keys before
-  trusting it.
-- Stripe Billing — the $49/month subscription itself. Customer payments work;
-  charging *stores* does not exist yet.
+- A Stripe price id on the plan row. Billing is built and tested, but
+  `plans.stripe_price_id` is null, so nobody can actually subscribe until a
+  real $49/month recurring price exists in the Stripe dashboard.
+- Dunning email. The grace-period warning is in-app only today, so an owner who
+  does not sign in learns their storefront is hidden by finding it hidden.
 - Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
   deployment
 - OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
@@ -291,15 +310,18 @@ while `curl` fetches them happily.
 
 ## Local development
 
-Prerequisites: Postgres 16 and Redis running via Homebrew.
+Prerequisites: Node 22, and Postgres 16 plus Redis running somewhere. The
+shortest way to get both:
 
 ```bash
-brew services start postgresql@16
-brew services start redis
+docker compose up -d
 ```
 
-If the Redis service refuses to start (`launchctl bootstrap ... exited with 5`),
-run it in the foreground instead — the app only needs the port:
+Homebrew works too if you already have it (`brew services start postgresql@16
+redis`) — see [Services](#services-docker-or-homebrew) for the trade-off and
+the port collision if you run both. If the Homebrew Redis service refuses to
+start (`launchctl bootstrap ... exited with 5`), run it in the foreground
+instead — the app only needs the port:
 
 ```bash
 redis-server --port 6379
@@ -367,32 +389,50 @@ Run just the tenant-isolation gate (this must always pass — it's the release g
 cd apps/api && npm run test:isolation
 ```
 
-## Why Homebrew services instead of Docker
+## Services: Docker or Homebrew
 
-The plan ([§14.2](docs/plan/14-deployment-architecture.md)) calls for docker-compose in
-local dev. This repo currently uses Homebrew Postgres and Redis instead, because Docker
-wasn't installed on the machine this was scaffolded on and Docker Desktop needs an
-interactive install.
+`docker-compose.yml` provides Postgres and Redis, and is the shortest path from a
+fresh clone to a working database:
 
-**This is a known gap, not a decision.** Add a `docker-compose.yml` matching
-§7.1 before onboarding a second developer or wiring CI — CI needs ephemeral, disposable
-service containers, not a shared local install.
+```bash
+docker compose up -d
+```
+
+Homebrew works equally well if you already have it, and is what this repo was
+developed against. Either way the setup is the same afterwards, because
+migration `00000000000001` creates the `bba_app` role and every extension — a
+fresh database needs no init scripts, just `prisma migrate deploy`.
+
+Only the backing services are containerised, not the API and web apps: those
+run on the host with hot reload, and containerising them would mean a rebuild
+per change for no local benefit.
+
+**If you run both**, they collide on 5432 and 6379. Stop the Homebrew services
+(`brew services stop postgresql@16 redis`) or change the host-side ports in
+`docker-compose.yml`.
+
+`.github/workflows/ci.yml` uses the same image versions as service containers.
+Keep the two in step — if they drift, CI stops testing what developers run,
+which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Run Stripe against real test keys.** The whole payment path is built and
-   tested against a fake provider, and signature verification is proven with a
-   genuine HMAC — but nothing has yet talked to Stripe. Walk one order through
-   onboarding → card → refund before trusting it.
-2. **Move mail and media processing onto the worker.** Both run inline in the
+1. **Set a Stripe price id on the plan.** Nobody can subscribe until
+   `plans.stripe_price_id` points at a real $49/month recurring price. The
+   billing code is done and tested; this is the one piece of configuration
+   between it and working.
+2. **Dunning emails.** The grace-period warning is in-app only, so an owner who
+   does not sign in gets no warning before their storefront is hidden. Needs
+   mail moved onto the worker.
+3. **Move mail and media processing onto the worker.** Both run inline in the
    API request today; a slow image resize blocks a response that should have
-   returned already.
-3. **Stripe Billing** — the $49/month subscription. Customer payments work;
-   charging stores does not exist.
-4. **`docker-compose.yml`** — before a second developer or CI (see above).
-5. **Rest of Phase 5** — coupons and promotions, catalog CSV import/export.
+   returned already. This is what BullMQ's retries and dead-lettering are for.
+4. **A distributed lock on scheduled jobs**, before running a second worker.
+5. **Inventory management surfaces** — receiving, count sessions, low-stock
+   alerts. The ledger and reservation semantics they build on are done.
 6. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
+7. **Phases 9–12**: delivery, reporting, hardening, deployment.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

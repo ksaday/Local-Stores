@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # Versions pinned to match docker-compose.yml. If those drift apart, CI
+    # stops testing what developers run — which is the failure mode where a
+    # green build breaks on someone's machine.
+    services:
+      postgres:
+        image: postgres:16.11-alpine
+        env:
+          POSTGRES_DB: bba_dev
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bba_dev"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+
+    env:
+      # The migration identity: a superuser, because migrations create roles,
+      # extensions and policies.
+      DATABASE_URL: postgresql://postgres@localhost:5432/bba_dev?schema=public
+      # What the application and the tests actually connect as. Distinct on
+      # purpose — a superuser bypasses RLS entirely, so running the suite as
+      # one would pass against a configuration that cannot work in production.
+      DATABASE_URL_APP: postgresql://bba_app@localhost:5432/bba_dev?schema=public
+      REDIS_URL: redis://localhost:6379
+      WEB_ORIGIN: http://localhost:3100
+      # No outbound calls from CI: the breach check would make the suite depend
+      # on a third party being up.
+      PASSWORD_BREACH_CHECK: "false"
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate --workspace @bba/api
+
+      - name: Apply migrations
+        # `migrate deploy` rather than `db push`: this is also the check that
+        # the migration chain builds a database from nothing, which has drifted
+        # before and is invisible until someone clones the repo.
+        run: npx prisma migrate deploy
+        working-directory: apps/api
+
+      - name: Build shared package
+        # The API imports @bba/shared from its compiled output, so this has to
+        # happen before typecheck.
+        run: npm run build --workspace @bba/shared
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Cross-tenant isolation gate
+        # Run again on its own so a failure here is unmistakable in the log.
+        # Any store-A actor reaching store-B's rows means RLS has a hole, and
+        # this is the check that says so (plan §12.12).
+        run: npm run test:isolation --workspace @bba/api

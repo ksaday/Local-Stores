@@ -1,0 +1,64 @@
+# Local development and CI services (plan §7.1, §14.2).
+#
+# Deliberately only the backing services — Postgres and Redis — not the API and
+# web apps. Those run on the host with hot reload, which is what you want while
+# writing code; containerising them would mean a rebuild per change and buy
+# nothing locally. CI needs exactly these two, disposable.
+#
+#   docker compose up -d
+#   cd apps/api && npx prisma migrate deploy && npm run seed:dev
+#
+# The `bba_app` role and every extension are created by migration
+# 00000000000001, so a fresh container needs no init scripts — `migrate deploy`
+# against an empty database is the whole setup.
+
+services:
+  postgres:
+    # Pinned to the minor version rather than `16` or `latest`: an RLS or
+    # planner change between minors would appear as a mysteriously failing
+    # isolation test rather than as an upgrade anyone chose.
+    image: postgres:16.11-alpine
+    container_name: bba-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bba_dev
+      # Trust auth on a container bound to localhost only. This is a
+      # development database that holds nothing real; a password here would be
+      # committed to the repo, which is worse than not having one.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: postgres
+    ports:
+      # If you already run Homebrew Postgres, this clashes on 5432. Stop the
+      # service (`brew services stop postgresql@16`) or change the host side.
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` returns success while the server is still replaying WAL on
+      # first boot, so the query is what actually proves it can serve.
+      test: ["CMD-SHELL", "psql -U postgres -d bba_dev -c 'SELECT 1' || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: bba-redis
+    restart: unless-stopped
+    # No persistence: everything Redis holds here is a cache or an in-flight
+    # pub/sub message. The durable copy of every order event is the outbox
+    # table, which is the entire point of §12.8 — losing Redis costs a
+    # redelivery, never data.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres-data:
+    name: bba-postgres-data
