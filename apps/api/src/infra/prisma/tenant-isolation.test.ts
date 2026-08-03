@@ -75,6 +75,8 @@ async function teardown(): Promise<void> {
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM outbox_events WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM count_lines WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM count_sessions WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM billing_notifications WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${[OWNER_A, OWNER_B]})`;
@@ -184,6 +186,27 @@ describe("cross-tenant isolation (RLS)", () => {
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
       (tx) => tx.order.findMany({ where: { id: orderId } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's stock counts from another store", async () => {
+    // A count session's variances are a shop's shrinkage figures. Another
+    // shop on the same platform reading them is straightforwardly commercial.
+    const sessionId = crypto.randomUUID();
+    await admin.$executeRaw`
+      INSERT INTO count_sessions (id,store_id,name,status,opened_by,opened_at)
+      VALUES (${sessionId},${STORE_B},'B stock count','OPEN',${OWNER_B},now())`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.countSession.findMany({ where: { id: sessionId } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.countSession.findMany({ where: { id: sessionId } }),
     );
 
     expect(fromStoreA).toHaveLength(0);

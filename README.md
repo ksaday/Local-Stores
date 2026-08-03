@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 480 tests passing. A shop can list products, take an order online or over
+in.** 496 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -90,7 +90,19 @@ stock, so what is already promised to uncollected orders does not keep a line
 off the list. A Stock screen lists every sellable line with what is
 sellable rather than merely present, flags what is under its reorder level, and
 puts receiving, adjusting, tracking settings and the movement history on the
-row itself. Count sessions are not built.
+row itself.
+
+**Stock counts** — open a session, walk the shop entering what is on the
+shelves, review what disagrees, then post. Four steps because counting a shop
+has four, and because it is the one inventory operation with a middle: it takes
+an afternoon, gets interrupted, and has to survive somebody closing the laptop.
+Nothing moves until posting, so an abandoned count leaves the ledger untouched.
+Expected quantity is captured when each line is *entered*, not recomputed at
+posting — otherwise a sale made mid-count is folded into the variance and
+blamed on whoever was holding the clipboard. A line that matched writes no
+movement at all. One open count per store, enforced by a partial unique index
+rather than by a check in code, because two people counting the same shelves
+post the same difference twice.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order

@@ -956,6 +956,51 @@ model StoreSubscription {
   @@map("store_subscriptions")
 }
 
+/// One physical count of a shop: open, entered, then posted as variances.
+model CountSession {
+  id       String             @id @default(uuid())
+  storeId  String             @map("store_id")
+  name     String
+  status   CountSessionStatus @default(OPEN)
+  openedBy String             @map("opened_by")
+  openedAt DateTime           @default(now()) @map("opened_at")
+  postedBy String?            @map("posted_by")
+  postedAt DateTime?          @map("posted_at")
+  note     String?
+
+  lines CountLine[]
+
+  @@index([storeId, status])
+  @@map("count_sessions")
+}
+
+/// What was found on one shelf, against what was expected at that moment.
+model CountLine {
+  id          String   @id @default(uuid())
+  sessionId   String   @map("session_id")
+  storeId     String   @map("store_id")
+  variantId   String   @map("variant_id")
+  /// Captured when the line was entered, not at posting — otherwise a sale
+  /// made during the count is folded into the variance.
+  expectedQty Int      @map("expected_qty")
+  countedQty  Int      @map("counted_qty")
+  note        String?
+  countedBy   String   @map("counted_by")
+  countedAt   DateTime @default(now()) @map("counted_at")
+
+  session CountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, variantId], map: "count_lines_one_per_variant")
+  @@index([storeId], map: "count_lines_store")
+  @@map("count_lines")
+}
+
+enum CountSessionStatus {
+  OPEN
+  POSTED
+  ABANDONED
+}
+
 /// Which worker last ran a scheduled job, and when. The row *is* the lease:
 /// claiming a pass means winning a conditional update of it.
 model ScheduledJobRun {
