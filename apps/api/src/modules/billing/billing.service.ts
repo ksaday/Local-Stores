@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { PaymentProvider } from "../../infra/payments/payment.provider.js";
@@ -137,9 +137,7 @@ export class BillingService {
       priceId: plan.stripePriceId,
       trialDays: plan.trialDays,
       storeId,
-      // Keyed on the store, so a double-clicked "Start subscription" returns
-      // the first one rather than creating a second.
-      idempotencyKey: `sub-${storeId}`,
+      idempotencyKey: subscriptionIdempotencyKey(storeId, customerId, plan.stripePriceId, plan.trialDays),
     });
 
     await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
@@ -337,6 +335,39 @@ export class BillingService {
       `,
     );
   }
+}
+
+/**
+ * The idempotency key for creating a subscription.
+ *
+ * It covers every parameter that can vary, not just the store. Keying on the
+ * store alone looks right — one store, one subscription — but Stripe rejects a
+ * reused key whose parameters have changed, with a 500 that lasts the full
+ * 24-hour idempotency window:
+ *
+ *   "Keys for idempotent requests can only be used with the same parameters
+ *    they were first used with."
+ *
+ * So a store whose billing customer was recreated, or whose plan price or
+ * trial length changed since their last attempt, could not subscribe at all
+ * for a day. Including those inputs means a genuinely different request gets a
+ * different key, while the case the key exists for — a double-clicked "Start
+ * subscription", where every parameter is identical — still collapses to one.
+ *
+ * Hashed rather than concatenated only to keep the key inside Stripe's
+ * 255-character limit; the store id stays in front so it is greppable.
+ */
+function subscriptionIdempotencyKey(
+  storeId: string,
+  customerId: string,
+  priceId: string,
+  trialDays: number,
+): string {
+  const digest = createHash("sha256")
+    .update([customerId, priceId, String(trialDays)].join("|"))
+    .digest("hex")
+    .slice(0, 16);
+  return `sub-${storeId}-${digest}`;
 }
 
 /** Stripe's subscription states, narrowed to the four we act on. */

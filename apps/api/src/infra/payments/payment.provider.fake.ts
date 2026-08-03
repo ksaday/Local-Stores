@@ -140,7 +140,11 @@ export class FakePaymentProvider extends PaymentProvider {
 
   readonly subscriptionCalls: SubscriptionRequest[] = [];
   private readonly customersByStore = new Map<string, string>();
-  private readonly subscriptionsByKey = new Map<string, SubscriptionResult>();
+  /** Keyed by idempotency key, holding the parameters it was first used with. */
+  private readonly subscriptionsByKey = new Map<
+    string,
+    { fingerprint: string; result: SubscriptionResult }
+  >();
 
   async ensureBillingCustomer(input: BillingCustomerRequest): Promise<string> {
     if (input.existingCustomerId) return input.existingCustomerId;
@@ -158,8 +162,24 @@ export class FakePaymentProvider extends PaymentProvider {
   async createSubscription(input: SubscriptionRequest): Promise<SubscriptionResult> {
     this.subscriptionCalls.push(input);
 
+    const fingerprint = [input.customerId, input.priceId, input.trialDays].join("|");
     const existing = this.subscriptionsByKey.get(input.idempotencyKey);
-    if (existing) return existing;
+    if (existing) {
+      // Stripe does not quietly return the earlier subscription when the
+      // parameters have changed — it rejects the request outright, and keeps
+      // rejecting it for 24 hours. Reproducing that here is the point: a fake
+      // that collapses every reuse makes a key too narrow to tell apart two
+      // genuinely different requests look correct, which is exactly how such a
+      // key reached production once already.
+      if (existing.fingerprint !== fingerprint) {
+        throw new Error(
+          "Keys for idempotent requests can only be used with the same parameters " +
+            `they were first used with. Try using a key other than '${input.idempotencyKey}' ` +
+            "if you meant to execute a different request.",
+        );
+      }
+      return existing.result;
+    }
 
     const trialEndsAt = new Date(Date.now() + input.trialDays * 86_400_000);
     const result: SubscriptionResult = {
@@ -168,7 +188,7 @@ export class FakePaymentProvider extends PaymentProvider {
       trialEndsAt,
       currentPeriodEnd: trialEndsAt,
     };
-    this.subscriptionsByKey.set(input.idempotencyKey, result);
+    this.subscriptionsByKey.set(input.idempotencyKey, { fingerprint, result });
     return result;
   }
 

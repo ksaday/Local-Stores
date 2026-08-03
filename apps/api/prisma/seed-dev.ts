@@ -7,6 +7,14 @@ import { hash } from "@node-rs/argon2";
 
 const db = new PrismaClient();
 
+/**
+ * Enough of a Prisma client to run raw statements. Taking this as a parameter
+ * lets the cleanup be exercised inside a transaction that is then rolled back,
+ * which is the only way to prove the delete order is right without destroying
+ * the data you are testing against.
+ */
+type SeedClient = Pick<PrismaClient, "$queryRaw" | "$executeRawUnsafe">;
+
 const STORE = "dd000000-0000-4000-8000-000000000001";
 const OWNER = "dd000000-0000-4000-8000-000000000002";
 
@@ -23,20 +31,107 @@ const PRODUCTS = [
   ["Baguette", "Bread", 375, "Crackling crust, baked twice daily.", null],
 ] as const;
 
+/**
+ * Removes every trace of the seeded store and owner, so the seed can be re-run.
+ *
+ * The order is derived from the live foreign-key graph rather than written out
+ * by hand. The hand-written version rotted exactly as you'd expect: it was
+ * correct for the tables that existed when it was written, and every phase
+ * since added another table pointing at `stores` — carts, orders, payments,
+ * coupons, subscriptions — none of which it knew to clear. The symptom was a
+ * foreign-key error naming a table nobody had thought about, on the second run
+ * only.
+ *
+ * Anything reachable from `stores` or `users` is cleared children-first. A
+ * table added in a later phase is handled without touching this, as long as it
+ * carries `store_id` or `user_id` — and if it doesn't, the assertion below
+ * says so by name instead of letting the seed fail obscurely.
+ */
+export async function clearSeededStore(client: SeedClient = db): Promise<void> {
+  const fks = await client.$queryRaw<{ child: string; parent: string }[]>`
+    SELECT conrelid::regclass::text AS child, confrelid::regclass::text AS parent
+    FROM pg_constraint WHERE contype = 'f' AND conrelid <> confrelid
+  `;
+  const columns = await client.$queryRaw<{ table_name: string; column_name: string }[]>`
+    SELECT table_name, column_name FROM information_schema.columns
+    WHERE table_schema = 'public' AND column_name IN ('store_id', 'user_id')
+  `;
+
+  const parentsOf = new Map<string, string[]>();
+  for (const { child, parent } of fks) {
+    parentsOf.set(child, [...(parentsOf.get(child) ?? []), parent]);
+  }
+
+  // Everything that hangs off the two roots, however indirectly: order_items
+  // reach `stores` only through `orders`.
+  const reachable = new Set(["stores", "users"]);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [child, parents] of parentsOf) {
+      if (!reachable.has(child) && parents.some((p) => reachable.has(p))) {
+        reachable.add(child);
+        changed = true;
+      }
+    }
+  }
+
+  // Depth-first over "who references me", emitting after recursing, which is
+  // what puts children ahead of their parents.
+  const order: string[] = [];
+  const visited = new Set<string>();
+  const visit = (table: string): void => {
+    if (visited.has(table)) return;
+    visited.add(table);
+    for (const [child, parents] of parentsOf) {
+      if (reachable.has(child) && parents.includes(table)) visit(child);
+    }
+    order.push(table);
+  };
+  for (const table of reachable) visit(table);
+
+  const has = (table: string, column: string): boolean =>
+    columns.some((c) => c.table_name === table && c.column_name === column);
+
+  // Reached only through a membership, so it has neither id to filter on.
+  // Listed explicitly because it cannot be derived, and asserted below so a
+  // second table like it can't be added silently.
+  const BY_MEMBERSHIP = ["member_permission_overrides"];
+
+  const undeletable = order.filter(
+    (t) =>
+      !["stores", "users", ...BY_MEMBERSHIP].includes(t) &&
+      !has(t, "store_id") &&
+      !has(t, "user_id"),
+  );
+  if (undeletable.length > 0) {
+    throw new Error(
+      `These tables reference the seeded store but carry neither store_id nor user_id, ` +
+        `so this seed cannot clear them: ${undeletable.join(", ")}. ` +
+        `Add an explicit delete for each before re-running.`,
+    );
+  }
+
+  for (const table of order) {
+    if (BY_MEMBERSHIP.includes(table)) {
+      await client.$executeRawUnsafe(
+        `DELETE FROM ${table} WHERE membership_id IN (SELECT id FROM store_memberships WHERE store_id = $1)`,
+        STORE,
+      );
+    } else if (table === "stores") {
+      await client.$executeRawUnsafe(`DELETE FROM stores WHERE id = $1`, STORE);
+    } else if (table === "users") {
+      await client.$executeRawUnsafe(`DELETE FROM users WHERE id = $1`, OWNER);
+    } else if (has(table, "store_id")) {
+      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE store_id = $1`, STORE);
+    } else {
+      // Only the owner's own rows: sessions, tokens, identities.
+      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE user_id = $1`, OWNER);
+    }
+  }
+}
+
 async function main() {
-  // Ledger and levels first: both reference variants, and the ledger cannot be
-  // deleted by the app role at all — this script runs as the owner.
-  await db.$executeRaw`DELETE FROM stock_movements WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM stock_levels WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM products WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM categories WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM store_hours WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM tax_rates WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM delivery_zones WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM store_memberships WHERE store_id = ${STORE}`;
-  await db.$executeRaw`DELETE FROM users WHERE id = ${OWNER}`;
+  await clearSeededStore();
 
   // Matches the API's argon2id parameters (plan §13.1) so the seeded owner can
   // actually sign in rather than being a row that only looks like an account.

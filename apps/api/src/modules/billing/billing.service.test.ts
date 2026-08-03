@@ -15,12 +15,29 @@ let prisma: PrismaService;
 let provider: FakePaymentProvider;
 let billing: BillingService;
 
-beforeAll(() => {
+/**
+ * `plans` is a single global row, not tenant data — these tests rewrite it and
+ * must put it back. Left unrestored, a local test run silently unconfigures
+ * billing for the whole development environment: the price id set by
+ * `npm run billing:sync-plan` is replaced by a fake one, and the next attempt
+ * to subscribe fails against Stripe with a price that does not exist.
+ */
+let originalPriceId: string | null = null;
+
+beforeAll(async () => {
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
+  originalPriceId = await asAdmin(async (db) => {
+    const [row] = await db.$queryRaw<{ stripe_price_id: string | null }[]>`
+      SELECT stripe_price_id FROM plans WHERE code = 'STANDARD'`;
+    return row?.stripe_price_id ?? null;
+  });
 });
 
 afterAll(async () => {
   await cleanup();
+  await asAdmin((db) =>
+    db.$executeRaw`UPDATE plans SET stripe_price_id = ${originalPriceId} WHERE code = 'STANDARD'`,
+  );
   await prisma.$disconnect();
 });
 
@@ -145,6 +162,56 @@ describe("starting a subscription", () => {
 
     await billing.startSubscription(STORE, OWNER);
     expect(provider.subscriptionCalls[0]!.customerId).toBe(customerCallsBefore);
+  });
+
+  /**
+   * Found against real Stripe, not the fake: after the store's billing
+   * customer was recreated, every subscribe attempt returned a 500 for the
+   * next 24 hours. The key was `sub-<storeId>` — the same for a genuinely
+   * different request — and Stripe rejects a reused key whose parameters have
+   * changed rather than collapsing it.
+   */
+  it("does not reuse an idempotency key across a changed billing customer", async () => {
+    await billing.startSubscription(STORE, OWNER);
+    const firstKey = provider.subscriptionCalls[0]!.idempotencyKey;
+
+    // The customer is recreated and the subscription forgotten — what a
+    // Stripe-side deletion, or a reseeded development database, looks like.
+    await asAdmin((db) =>
+      db.$executeRaw`
+        UPDATE store_subscriptions
+        SET stripe_subscription_id = NULL, stripe_customer_id = 'cus_recreated'
+        WHERE store_id = ${STORE}`,
+    );
+
+    // Must not throw: the fake now rejects a reused key the way Stripe does.
+    await billing.startSubscription(STORE, OWNER);
+
+    const secondKey = provider.subscriptionCalls[1]!.idempotencyKey;
+    expect(secondKey).not.toBe(firstKey);
+    expect(secondKey).toContain(STORE);
+  });
+
+  it("reuses the idempotency key when nothing about the request changed", async () => {
+    // A double-clicked "Start subscription" is the case the key exists for,
+    // and it must still collapse to a single subscription.
+    const first = await billing.startSubscription(STORE, OWNER);
+    const firstKey = provider.subscriptionCalls[0]!.idempotencyKey;
+    const customerId = provider.subscriptionCalls[0]!.customerId;
+
+    // Same customer, subscription id lost — a retry after the write failed.
+    await asAdmin((db) =>
+      db.$executeRaw`
+        UPDATE store_subscriptions SET stripe_subscription_id = NULL WHERE store_id = ${STORE}`,
+    );
+
+    const second = await billing.startSubscription(STORE, OWNER);
+
+    expect(provider.subscriptionCalls[1]!.idempotencyKey).toBe(firstKey);
+    expect(provider.subscriptionCalls[1]!.customerId).toBe(customerId);
+    // Same key, so the provider hands back the original rather than billing
+    // the shop for a second subscription.
+    expect(second.subscriptionId).toBe(first.subscriptionId);
   });
 
   it("refuses clearly when no Stripe price is configured", async () => {

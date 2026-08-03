@@ -1,0 +1,11 @@
+{
+  // Scripts and seeds are not part of the build — `tsconfig.json` emits to
+  // dist and must stay limited to src. They are still TypeScript that breaks,
+  // and a seed or a billing script that no longer compiles is discovered by
+  // the person running it at the worst possible moment. Checked, never built.
+  "extends": "./tsconfig.json",
+  // rootDir comes from the build config and points at src, which these
+  // files are deliberately outside of. Cleared, since nothing is emitted.
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["scripts/**/*.ts", "prisma/**/*.ts"]
+}

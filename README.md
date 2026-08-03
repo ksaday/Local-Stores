@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 425 tests passing. A shop can list products, take an order online or over
+in.** 427 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -154,9 +154,10 @@ coupon management and the CSV tools.
   it must be fixed before running a second worker.
 - Geocoding, so delivery addresses can be matched to a zone. Checkout says
   plainly that it cannot place an address rather than guessing a fee.
-- A Stripe price id on the plan row. Billing is built and tested, but
-  `plans.stripe_price_id` is null, so nobody can actually subscribe until a
-  real $49/month recurring price exists in the Stripe dashboard.
+- A Stripe price id in *production*. `npm run billing:sync-plan` creates the
+  product and price and writes the id onto the plan row; it has been run
+  against test mode, where a store can now subscribe end to end. It still has
+  to be run once against live keys before anyone is charged for real.
 - Dunning email. The grace-period warning is in-app only today, so an owner who
   does not sign in learns their storefront is hidden by finding it hidden.
 - Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
@@ -375,6 +376,17 @@ stripe listen --forward-to localhost:3001/api/v1/webhooks/stripe
 Without those keys the platform runs cash-only: card checkout is not offered,
 rather than failing at the moment a customer tries to pay.
 
+The platform's own $49/month subscription needs a Stripe price before a store
+can subscribe. This creates it and writes the id onto the plan row:
+
+```bash
+cd apps/api && npm run billing:sync-plan
+```
+
+Safe to re-run, and it must be run once per Stripe account — a test-mode price
+id is useless in production and vice versa, which is why it is a script rather
+than a migration. It refuses to pair a test key with `NODE_ENV=production`.
+
 Run tests:
 
 ```bash
@@ -417,22 +429,18 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Set a Stripe price id on the plan.** Nobody can subscribe until
-   `plans.stripe_price_id` points at a real $49/month recurring price. The
-   billing code is done and tested; this is the one piece of configuration
-   between it and working.
-2. **Dunning emails.** The grace-period warning is in-app only, so an owner who
+1. **Dunning emails.** The grace-period warning is in-app only, so an owner who
    does not sign in gets no warning before their storefront is hidden. Needs
    mail moved onto the worker.
-3. **Move mail and media processing onto the worker.** Both run inline in the
+2. **Move mail and media processing onto the worker.** Both run inline in the
    API request today; a slow image resize blocks a response that should have
    returned already. This is what BullMQ's retries and dead-lettering are for.
-4. **A distributed lock on scheduled jobs**, before running a second worker.
-5. **Inventory management surfaces** — receiving, count sessions, low-stock
+3. **A distributed lock on scheduled jobs**, before running a second worker.
+4. **Inventory management surfaces** — receiving, count sessions, low-stock
    alerts. The ledger and reservation semantics they build on are done.
-6. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+5. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-7. **Phases 9–12**: delivery, reporting, hardening, deployment.
+6. **Phases 9–12**: delivery, reporting, hardening, deployment.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR
