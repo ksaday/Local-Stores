@@ -7,6 +7,7 @@ import { OutboxModule } from "../infra/outbox/outbox.module.js";
 import { AuditModule } from "../modules/audit/audit.module.js";
 import { BillingModule } from "../modules/billing/billing.module.js";
 import { OrdersModule } from "../modules/orders/orders.module.js";
+import { MailProcessor } from "./mail-processor.js";
 import { OutboxRelay } from "./outbox-relay.js";
 import { WorkerScheduler } from "./scheduler.js";
 
@@ -33,6 +34,6 @@ import { WorkerScheduler } from "./scheduler.js";
     OrdersModule,
     BillingModule,
   ],
-  providers: [OutboxRelay, WorkerScheduler],
+  providers: [MailProcessor, OutboxRelay, WorkerScheduler],
 })
 export class WorkerModule {}

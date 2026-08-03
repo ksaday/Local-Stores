@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { BillingService } from "../modules/billing/billing.service.js";
+import { MailQueue } from "../infra/queue/queue.module.js";
 import { DunningService } from "../modules/billing/dunning.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -13,10 +14,12 @@ export interface ScheduledJob {
 /**
  * The worker's scheduled jobs (plan §12.9).
  *
- * Deliberately plain `setInterval` rather than BullMQ repeatable jobs for this
- * slice: every job here is idempotent and cheap, so the guarantees BullMQ adds
- * — retries, dead-lettering, distributed locks — cost more than they buy. The
- * outbox already provides at-least-once delivery, which was the actual gap.
+ * Still plain `setInterval`, even now that BullMQ is in the codebase for mail.
+ * The difference is what the two carry: a queue job is one message to one
+ * person and losing it loses that message, whereas these are sweeps over
+ * whatever the database currently says. A missed pass costs nothing, because
+ * the next one recomputes the same answer. Retries and dead-lettering have
+ * nothing to retry here.
  *
  * The job that genuinely needs a distributed lock is the one to watch: with two
  * workers running, both would sweep. That is currently safe only because every
@@ -33,6 +36,7 @@ export class WorkerScheduler {
     private readonly relay: OutboxRelay,
     private readonly billing: BillingService,
     private readonly dunning: DunningService,
+    private readonly mail: MailQueue,
   ) {}
 
   jobs(): ScheduledJob[] {
@@ -88,6 +92,14 @@ export class WorkerScheduler {
           // Warned about rather than silently tolerated: parked events mean
           // staff screens have stopped hearing about something.
           if (parked > 0) this.logger.warn(`${parked} outbox event(s) parked after repeated failures`);
+
+          // Mail that exhausted every retry. Worth its own line: a failed
+          // outbox event costs a stale screen, whereas a failed email is a
+          // password reset or a suspension warning that never arrived.
+          const undelivered = await this.mail.deadLettered();
+          if (undelivered > 0) {
+            this.logger.error(`${undelivered} email(s) failed every attempt and were not delivered`);
+          }
           return "";
         },
       },

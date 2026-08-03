@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { MailProcessor } from "./mail-processor.js";
 import { OutboxRelay } from "./outbox-relay.js";
 import { WorkerScheduler } from "./scheduler.js";
 import { WorkerModule } from "./worker.module.js";
@@ -19,7 +20,9 @@ async function bootstrap(): Promise<void> {
 
   const scheduler = app.get(WorkerScheduler);
   const relay = app.get(OutboxRelay);
+  const mail = app.get(MailProcessor);
   scheduler.start();
+  mail.start();
   logger.log("Worker started");
 
   // Stop taking new work, finish what is in flight, then close connections.
@@ -28,6 +31,9 @@ async function bootstrap(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.log(`${signal} received, shutting down`);
     scheduler.stop();
+    // Before the relay, because a message half-delivered is worse than one
+    // still queued: closing the worker lets in-flight sends finish first.
+    await mail.stop();
     await relay.close();
     await app.close();
     process.exit(0);

@@ -26,6 +26,7 @@
     "@nestjs/platform-express": "^11.1.28",
     "@node-rs/argon2": "^2.0.2",
     "@prisma/client": "^5.22.0",
+    "bullmq": "^6.0.6",
     "cookie-parser": "^1.4.7",
     "file-type": "^21.3.4",
     "helmet": "^8.3.0",

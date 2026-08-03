@@ -46,13 +46,20 @@ services:
     image: redis:7.4-alpine
     container_name: bba-redis
     restart: unless-stopped
-    # No persistence: everything Redis holds here is a cache or an in-flight
-    # pub/sub message. The durable copy of every order event is the outbox
-    # table, which is the entire point of §12.8 — losing Redis costs a
-    # redelivery, never data.
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Persistence on, which it did not used to be. Redis was a cache and a
+    # pub/sub relay — losing it cost a redelivery, never data, because the
+    # durable copy of every order event is the outbox table (§12.8). It now
+    # also holds the notifications queue, and a queued email has no copy
+    # anywhere else: dropping it means a password reset or a suspension warning
+    # that simply never arrives.
+    #
+    # AOF rather than RDB snapshots, because the window matters more than the
+    # disk cost: `everysec` risks a second of jobs, a snapshot risks minutes.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -62,3 +69,5 @@ services:
 volumes:
   postgres-data:
     name: bba-postgres-data
+  redis-data:
+    name: bba-redis-data

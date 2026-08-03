@@ -11,3 +11,7 @@ dist/
 .storage/
 .next/
 next-env.d.ts
+
+# Redis snapshot, written into the working directory by a locally-launched
+# redis-server. Never part of the source tree.
+dump.rdb

@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 436 tests passing. A shop can list products, take an order online or over
+in.** 441 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -121,6 +121,15 @@ That is what makes the live queue correct with more than one API process and
 across restarts. Scheduled jobs: the relay (1s), PENDING order expiry (60s),
 and a dead-letter check (5m).
 
+**Mail queue** — outbound mail goes onto a BullMQ notifications queue and the
+worker delivers it, so a rate-limited or briefly down provider is a retry
+nobody sees rather than a "reset my password" request that hangs and then fails
+having already consumed the token. Five attempts, exponential backoff. Mail
+that exhausts them is kept, not discarded — an undelivered password reset is
+exactly what someone needs to be able to look at — and the dead-letter check
+reports it separately from stalled outbox events, because a stuck event costs a
+stale screen while a lost email costs the message itself.
+
 **Billing** — the $49/month subscription that is the platform's revenue,
 deliberately separate from Connect: that is a store being paid by its
 customers, this is the store owner paying us. One plan, no gating machinery.
@@ -154,9 +163,9 @@ coupon management and the CSV tools.
 
 ### Not started
 
-- BullMQ queues. The outbox and the scheduler are in, but media processing and
-  mail still run inline in the API request. Both should move to the worker,
-  which is what BullMQ's retries and dead-lettering are actually for.
+- Media processing on the worker. Mail has moved onto the notifications queue,
+  but image re-encoding still runs inline in the upload request, so a large
+  photo holds a response open while it is resized.
 - A distributed lock on scheduled jobs. Two workers would each run the expiry
   sweep; that is currently harmless only because every job is idempotent, and
   it must be fixed before running a second worker.
@@ -364,9 +373,12 @@ npm run dev --workspace @bba/web
 npm run worker --workspace @bba/api
 ```
 
-Without the worker everything still functions, but the order queue stops
-updating by itself and PENDING orders never expire — events pile up unpublished
-in `outbox_events` and go out when it next starts.
+The worker is not optional any more. Without it the order queue stops updating
+by itself, PENDING orders never expire, and — since mail moved onto the
+notifications queue — **no email is delivered at all**: password resets,
+invitations and billing warnings queue up in Redis and go out when it next
+starts. Outbox events behave the same way, piling up unpublished and
+then flushing.
 
 The storefront is then at `/stores` and the seeded shop at
 `/stores/morse-ave-bakery`. Sign in with the credentials the seed printed to
@@ -435,10 +447,13 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Move mail and media processing onto the worker.** Both run inline in the
-   API request today; a slow image resize blocks a response that should have
-   returned already. This is what BullMQ's retries and dead-lettering are for.
+1. **Move media processing onto the worker**, the way mail now is. Image
+   re-encoding still runs inline, so a large photo holds a response open while
+   it is resized.
 2. **A distributed lock on scheduled jobs**, before running a second worker.
+   Note this does *not* apply to the mail queue: BullMQ hands each job to one
+   consumer, so a second worker doubles mail throughput rather than doubling
+   the mail.
 3. **Inventory management surfaces** — receiving, count sessions, low-stock
    alerts. The ledger and reservation semantics they build on are done.
 4. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
