@@ -3,12 +3,33 @@ import { BillingService } from "../modules/billing/billing.service.js";
 import { MailQueue, MediaQueue } from "../infra/queue/queue.module.js";
 import { DunningService } from "../modules/billing/dunning.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
+import { JobLease } from "./job-lease.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
 
 export interface ScheduledJob {
   name: string;
   everyMs: number;
+  /**
+   * Whether only one worker in the fleet may run each pass.
+   *
+   * Off for work that is safe — or better — done by several at once. The
+   * outbox relay claims rows with `FOR UPDATE SKIP LOCKED`, so two workers
+   * take disjoint batches and drain twice as fast; serialising it would turn
+   * a benefit into a bottleneck.
+   */
+  exclusive?: boolean;
   run: () => Promise<string>;
+}
+
+/**
+ * How stale the last claim must be before another may be made.
+ *
+ * A little under the interval, because every worker's timer drifts: demanding
+ * the full interval would let a worker that woke a few milliseconds early lose
+ * the claim, skip its pass, and stretch an hourly sweep towards two hours.
+ */
+function claimWindow(everyMs: number): number {
+  return Math.floor(everyMs * 0.9);
 }
 
 /**
@@ -18,12 +39,12 @@ export interface ScheduledJob {
  * The difference is what the two carry: a queue job is one message to one
  * person and losing it loses that message, whereas these are sweeps over
  * whatever the database currently says. A missed pass costs nothing, because
- * the next one recomputes the same answer. Retries and dead-lettering have
- * nothing to retry here.
+ * the next one recomputes the same answer.
  *
- * The job that genuinely needs a distributed lock is the one to watch: with two
- * workers running, both would sweep. That is currently safe only because every
- * job is idempotent, and it is the thing to fix before running a second worker.
+ * Every worker keeps its own timers and they all wake together; the ones marked
+ * `exclusive` race for a lease and exactly one wins the pass. That is what
+ * makes a second worker safe to run — see `JobLease` for why it is a lease and
+ * not a lock.
  */
 @Injectable()
 export class WorkerScheduler {
@@ -38,6 +59,7 @@ export class WorkerScheduler {
     private readonly dunning: DunningService,
     private readonly mail: MailQueue,
     private readonly mediaQueue: MediaQueue,
+    private readonly lease: JobLease,
   ) {}
 
   jobs(): ScheduledJob[] {
@@ -68,6 +90,9 @@ export class WorkerScheduler {
         // days, and taking a shop offline is not something to do eagerly.
         name: "billing-grace-period",
         everyMs: 3_600_000,
+        // Suspending is idempotent, but two workers would write two audit
+        // entries and two "store suspended" lines for one event.
+        exclusive: true,
         run: async () => {
           const suspended = await this.billing.suspendExpiredGracePeriods();
           return suspended > 0 ? `suspended ${suspended} unpaid store(s)` : "";
@@ -80,6 +105,10 @@ export class WorkerScheduler {
         // says so, rather than the owner finding out an hour later.
         name: "billing-dunning",
         everyMs: 3_600_000,
+        // The one that is not merely untidy when doubled: both workers would
+        // send before either recorded, and the unique index stops the second
+        // *record*, not the second email.
+        exclusive: true,
         run: async () => {
           const sent = await this.dunning.run();
           return sent > 0 ? `sent ${sent} dunning email(s)` : "";
@@ -88,6 +117,9 @@ export class WorkerScheduler {
       {
         name: "dead-letter-check",
         everyMs: 300_000,
+        // Nothing but logging, and one copy of a warning is what makes it
+        // legible.
+        exclusive: true,
         run: async () => {
           const parked = await this.relay.deadLettered();
           // Warned about rather than silently tolerated: parked events mean
@@ -123,6 +155,13 @@ export class WorkerScheduler {
       const tick = async () => {
         if (!this.running) return;
         try {
+          // Another worker got this pass. Not worth a log line: with two
+          // workers this is the expected outcome half the time.
+          if (job.exclusive && !(await this.lease.claim(job.name, claimWindow(job.everyMs)))) {
+            if (this.running) this.timers.push(setTimeout(tick, job.everyMs));
+            return;
+          }
+
           const outcome = await job.run();
           if (outcome) this.logger.log(`${job.name}: ${outcome}`);
         } catch (err) {

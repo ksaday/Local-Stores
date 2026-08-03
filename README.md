@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 453 tests passing. A shop can list products, take an order online or over
+in.** 460 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -111,6 +111,14 @@ it once — a replay loses the unique insert and is skipped. Refunds route
 through the account that took the original payment, are written PENDING and
 confirmed by webhook, and a database trigger refuses any that would exceed what
 was captured. Cash works whether or not Stripe is configured.
+
+**More than one worker** — scheduled sweeps claim each pass with a lease in
+`scheduled_job_runs`, so exactly one worker runs it however many are deployed.
+A lease and not a lock: what a worker holds is a timestamp that expires on its
+own, so a process killed mid-sweep blocks nothing and needs no cleanup. The
+outbox relay is deliberately *not* leased — it claims rows with `FOR UPDATE
+SKIP LOCKED`, so a second worker drains twice as fast rather than duplicating
+anything.
 
 **Worker & outbox** — a second entrypoint on the same codebase
 (`npm run worker`), importing the API's domain services so business rules live
@@ -486,15 +494,11 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **A distributed lock on scheduled jobs**, before running a second worker.
-   Note this does *not* apply to the mail queue: BullMQ hands each job to one
-   consumer, so a second worker doubles mail throughput rather than doubling
-   the mail.
-2. **Inventory management surfaces** — receiving, count sessions, low-stock
+1. **Inventory management surfaces** — receiving, count sessions, low-stock
    alerts. The ledger and reservation semantics they build on are done.
-3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+2. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-4. **Phases 9–12**: delivery, reporting, hardening, deployment.
+3. **Phases 9–12**: delivery, reporting, hardening, deployment.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

@@ -8,6 +8,7 @@ import { AuditModule } from "../modules/audit/audit.module.js";
 import { BillingModule } from "../modules/billing/billing.module.js";
 import { OrdersModule } from "../modules/orders/orders.module.js";
 import { MediaModule } from "../modules/media/media.module.js";
+import { JobLease } from "./job-lease.service.js";
 import { MailProcessor } from "./mail-processor.js";
 import { MediaProcessor } from "./media-processor.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -37,6 +38,6 @@ import { WorkerScheduler } from "./scheduler.js";
     BillingModule,
     MediaModule,
   ],
-  providers: [MailProcessor, MediaProcessor, OutboxRelay, WorkerScheduler],
+  providers: [JobLease, MailProcessor, MediaProcessor, OutboxRelay, WorkerScheduler],
 })
 export class WorkerModule {}

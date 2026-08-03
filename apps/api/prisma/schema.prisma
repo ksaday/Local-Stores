@@ -956,6 +956,17 @@ model StoreSubscription {
   @@map("store_subscriptions")
 }
 
+/// Which worker last ran a scheduled job, and when. The row *is* the lease:
+/// claiming a pass means winning a conditional update of it.
+model ScheduledJobRun {
+  jobName       String   @id @map("job_name")
+  lastStartedAt DateTime @map("last_started_at")
+  /// host:pid of the claimant. Read by humans only — nothing keys off it.
+  owner         String
+
+  @@map("scheduled_job_runs")
+}
+
 /// One dunning email that was sent. Append-only: the record of what a store
 /// was told, and when.
 model BillingNotification {
