@@ -37,6 +37,9 @@ import { MediaService } from "./media.service.js";
           // at a CDN: a CDN serves reads, and the local stand-in for a
           // presigned PUT is a route on the API.
           uploadBaseUrl: `${origin}/api/v1/media/upload`,
+          // Likewise this process, and deliberately not MEDIA_BASE_URL: private
+          // objects are the one kind a CDN never serves.
+          readBaseUrl: `${origin}/api/v1/media/private`,
           // Derived rather than configured. It signs nothing but short-lived
           // local upload grants, and a separate secret would be one more value
           // to set correctly in every environment for no gain. Hashed with a

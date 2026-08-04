@@ -1,7 +1,12 @@
+import { mkdtempSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { testNotifications } from "../../modules/notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { LocalDiskStorage } from "../../infra/storage/storage.provider.js";
+import { testStorage } from "../../infra/storage/test-storage.js";
 import { AuditService } from "../audit/audit.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 import { OutboxService } from "../../infra/outbox/outbox.service.js";
@@ -11,6 +16,8 @@ const APP_DATABASE_URL =
   process.env.DATABASE_URL_APP ?? "postgresql://bba_app@localhost:5432/bba_dev?schema=public";
 
 const STORE = "fd000000-0000-4000-8000-00000000000a";
+/** Somebody else's shop, so "belongs to this store" can be shown to mean it. */
+const OTHER_STORE = "fd000000-0000-4000-8000-00000000000b";
 const ADMIN = "fd000000-0000-4000-8000-000000000001";
 const DRIVER = "fd000000-0000-4000-8000-000000000002";
 const OTHER_DRIVER = "fd000000-0000-4000-8000-000000000003";
@@ -18,12 +25,14 @@ const CLERK = "fd000000-0000-4000-8000-000000000004";
 
 let prisma: PrismaService;
 let delivery: DeliveryService;
+let storage: LocalDiskStorage;
 
 beforeEach(async () => {
   prisma = prisma ?? new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   const audit = new AuditService(prisma);
   const orders = new OrdersService(prisma, audit, new OutboxService(prisma), testNotifications(prisma).notifications);
-  delivery = new DeliveryService(prisma, orders, audit);
+  storage = storage ?? new LocalDiskStorage(testStorage(mkdtempSync(join(tmpdir(), "bba-delivery-"))));
+  delivery = new DeliveryService(prisma, orders, audit, storage);
   await reset();
 });
 
@@ -54,11 +63,16 @@ async function reset(): Promise<void> {
         INSERT INTO users (id,email,name,status,created_at,updated_at)
         VALUES (${id},${email}::citext,${name},'ACTIVE',now(),now())`;
     }
-    await a.$executeRaw`
-      INSERT INTO stores (id,slug,name,business_type,status,owner_user_id,timezone,currency,
-                          branding,cash_enabled,stripe_charges_enabled,platform_fee_bps,created_at,updated_at)
-      VALUES (${STORE},'dl-store'::citext,'Delivery Store','RETAIL','ACTIVE',${ADMIN},
-              'America/Chicago','USD','{}'::jsonb,true,false,0,now(),now())`;
+    for (const [id, slug, name] of [
+      [STORE, "dl-store", "Delivery Store"],
+      [OTHER_STORE, "dl-other-store", "Somebody Else"],
+    ] as const) {
+      await a.$executeRaw`
+        INSERT INTO stores (id,slug,name,business_type,status,owner_user_id,timezone,currency,
+                            branding,cash_enabled,stripe_charges_enabled,platform_fee_bps,created_at,updated_at)
+        VALUES (${id},${slug}::citext,${name},'RETAIL','ACTIVE',${ADMIN},
+                'America/Chicago','USD','{}'::jsonb,true,false,0,now(),now())`;
+    }
     for (const [user, role] of [
       [ADMIN, "STORE_ADMIN"],
       [DRIVER, "DELIVERY"],
@@ -79,8 +93,10 @@ async function cleanup(): Promise<void> {
     await a.$executeRaw`DELETE FROM outbox_events WHERE store_id = ${STORE}`;
     await a.$executeRaw`DELETE FROM orders WHERE store_id = ${STORE}`;
     await a.$executeRaw`DELETE FROM audit_logs WHERE store_id = ${STORE}`;
+    // After deliveries, which reference them.
+    await a.$executeRaw`DELETE FROM media_assets WHERE store_id = ANY(${[STORE, OTHER_STORE]})`;
     await a.$executeRaw`DELETE FROM store_memberships WHERE store_id = ${STORE}`;
-    await a.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
+    await a.$executeRaw`DELETE FROM stores WHERE id = ANY(${[STORE, OTHER_STORE]})`;
     await a.$executeRaw`DELETE FROM users WHERE id = ANY(${[ADMIN, DRIVER, OTHER_DRIVER, CLERK]})`;
   });
 }
@@ -95,6 +111,39 @@ async function readyOrder(number = "DL-1"): Promise<string> {
             '{"line1":"1423 W Morse Ave","city":"Chicago"}'::jsonb,
             1000,1000,'USD',now(),now(),now())`);
   return id;
+}
+
+/**
+ * A photograph the driver has already uploaded.
+ *
+ * Written straight to the table rather than through the upload pipeline: what
+ * is under test here is what the delivery does with a finished asset, and the
+ * three-step upload has its own suite.
+ */
+async function proofAsset(
+  overrides: { storeId?: string; kind?: string; status?: string } = {},
+): Promise<string> {
+  const id = randomUUID();
+  const { storeId = STORE, kind = "PROOF", status = "READY" } = overrides;
+  await asAdmin((a) => a.$executeRaw`
+    INSERT INTO media_assets (id,store_id,owner_user_id,kind,status,storage_key,mime,bytes,
+                              is_private,created_at,updated_at)
+    VALUES (${id},${storeId},${DRIVER},${kind}::"MediaKind",${status}::"MediaStatus",
+            ${`proof/${id}`},'image/webp',2048,true,now(),now())`);
+  return id;
+}
+
+async function storageKeyOf(assetId: string): Promise<string> {
+  const [row] = await asAdmin(
+    (a) => a.$queryRaw<{ storage_key: string }[]>`
+      SELECT storage_key FROM media_assets WHERE id = ${assetId}`,
+  );
+  return row!.storage_key;
+}
+
+/** The signed part of a presigned URL. */
+function tokenOf(url: string): string {
+  return url.slice(url.lastIndexOf("/") + 1);
 }
 
 async function orderStatus(orderId: string): Promise<string> {
@@ -218,6 +267,96 @@ describe("handing it over", () => {
     // Off the board and off the round once it is done.
     expect(await delivery.board(STORE)).toHaveLength(0);
     expect(await delivery.queueFor(STORE, DRIVER)).toHaveLength(0);
+  });
+});
+
+describe("the doorstep photograph", () => {
+  /** A delivery out on the road, ready to be completed. */
+  async function outForDelivery(number = "DL-P"): Promise<string> {
+    const orderId = await readyOrder(number);
+    await delivery.board(STORE);
+    await delivery.assign(STORE, orderId, ADMIN, DRIVER);
+    await delivery.pickUp(STORE, orderId, DRIVER);
+    return orderId;
+  }
+
+  it("gives whoever reads the order a URL they can put in an img tag", async () => {
+    const orderId = await outForDelivery();
+    const assetId = await proofAsset();
+
+    await delivery.complete(STORE, orderId, DRIVER, { proofMediaAssetId: assetId });
+
+    const row = await delivery.one(STORE, orderId);
+    expect(row.proof_url).toContain("/api/v1/media/private/");
+    // The `medium` variant, not the original: this is looked at on a phone,
+    // and a doorstep at full camera resolution is megabytes to answer a
+    // question the smaller one answers.
+    expect(storage.verifyReadGrant(tokenOf(row.proof_url!)).key).toBe(
+      `${await storageKeyOf(assetId)}/medium.webp`,
+    );
+    expect(row.signature_url).toBeNull();
+  });
+
+  it("refuses a photo belonging to another shop", async () => {
+    const orderId = await outForDelivery();
+    const foreign = await proofAsset({ storeId: OTHER_STORE });
+
+    await expect(
+      delivery.complete(STORE, orderId, DRIVER, { proofMediaAssetId: foreign }),
+    ).rejects.toThrow(/isn't one this shop can use/);
+
+    // And the delivery is untouched — a rejected photo must not half-complete
+    // the handover.
+    expect(await orderStatus(orderId)).toBe("OUT_FOR_DELIVERY");
+  });
+
+  it("refuses one the worker has not finished with", async () => {
+    const orderId = await outForDelivery();
+    const pending = await proofAsset({ status: "PENDING" });
+
+    await expect(
+      delivery.complete(STORE, orderId, DRIVER, { proofMediaAssetId: pending }),
+    ).rejects.toThrow(/still uploading/);
+  });
+
+  it("refuses a product photo passed off as proof", async () => {
+    const orderId = await outForDelivery();
+    const product = await proofAsset({ kind: "PRODUCT" });
+
+    await expect(
+      delivery.complete(STORE, orderId, DRIVER, { proofMediaAssetId: product }),
+    ).rejects.toThrow(/isn't one this shop can use/);
+  });
+
+  it("mints a fresh URL each read, rather than storing one that expires", async () => {
+    const orderId = await outForDelivery();
+    await delivery.complete(STORE, orderId, DRIVER, { proofMediaAssetId: await proofAsset() });
+
+    const first = await delivery.one(STORE, orderId);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const second = await delivery.one(STORE, orderId);
+
+    // Different token, same object: the expiry moves with the read.
+    expect(second.proof_url).not.toBe(first.proof_url);
+    expect(storage.verifyReadGrant(tokenOf(second.proof_url!)).key).toBe(
+      storage.verifyReadGrant(tokenOf(first.proof_url!)).key,
+    );
+  });
+
+  it("will not let a read token be spent as an upload token, or the reverse", async () => {
+    const read = tokenOf(await storage.presignRead("private/thing/medium.webp"));
+    const { url } = await storage.presignUpload("quarantine/thing.bin", "image/webp", 1000);
+    const upload = tokenOf(url);
+
+    // Both are HMACs over a JSON payload, so one key would make each verify as
+    // the other and leave only the field names to notice.
+    expect(() => storage.verifyGrant(read)).toThrow();
+    expect(() => storage.verifyReadGrant(upload)).toThrow();
+  });
+
+  it("stops working after it expires", async () => {
+    const token = tokenOf(await storage.presignRead("private/thing/medium.webp", -1));
+    expect(() => storage.verifyReadGrant(token)).toThrow(/expired/);
   });
 });
 

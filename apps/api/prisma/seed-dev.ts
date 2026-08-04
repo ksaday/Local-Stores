@@ -17,10 +17,22 @@ type SeedClient = Pick<PrismaClient, "$queryRaw" | "$executeRawUnsafe">;
 
 const STORE = "dd000000-0000-4000-8000-000000000001";
 const OWNER = "dd000000-0000-4000-8000-000000000002";
+const DRIVER = "dd000000-0000-4000-8000-000000000099";
 
 /** Sign in as this to work the order queue. Dev only, obviously. */
 const OWNER_EMAIL = "owner@morseavebakery.test";
 const OWNER_PASSWORD = "bakery-dev-password-1";
+
+/**
+ * A second account, because the delivery screens are the one part of this app
+ * you cannot see as the owner.
+ *
+ * A store admin passes every check a driver passes, so signing in as the owner
+ * proves nothing about whether a driver can do their job — it exercises the
+ * exemptions rather than the permissions. Same password: this is a dev seed,
+ * and a second one to remember helps nobody.
+ */
+const DRIVER_EMAIL = "driver@morseavebakery.test";
 
 const PRODUCTS = [
   ["Sourdough Loaf", "Bread", 800, "Naturally leavened, 48-hour cold ferment.", "Morse Bakehouse"],
@@ -142,9 +154,14 @@ async function main() {
     parallelism: 4,
   });
 
-  await db.$executeRaw`
-    INSERT INTO users (id,email,name,status,password_hash,email_verified_at,created_at,updated_at)
-    VALUES (${OWNER},${OWNER_EMAIL}::citext,'Dana Morse','ACTIVE',${passwordHash},now(),now(),now())`;
+  for (const [id, email, name] of [
+    [OWNER, OWNER_EMAIL, "Dana Morse"],
+    [DRIVER, DRIVER_EMAIL, "Dev Driver"],
+  ] as const) {
+    await db.$executeRaw`
+      INSERT INTO users (id,email,name,status,password_hash,email_verified_at,created_at,updated_at)
+      VALUES (${id},${email}::citext,${name},'ACTIVE',${passwordHash},now(),now(),now())`;
+  }
 
   await db.$executeRaw`
     INSERT INTO stores (id,slug,name,business_type,status,owner_user_id,address_line1,city,state,postal_code,
@@ -226,15 +243,22 @@ async function main() {
 
   // The owner needs a membership as well as ownership: permissions resolve
   // from membership rows, so without one they can see the store and nothing in it.
-  await db.$executeRaw`
-    INSERT INTO store_memberships (id,store_id,user_id,role,status,accepted_at,created_at,updated_at)
-    VALUES (gen_random_uuid(),${STORE},${OWNER},'STORE_ADMIN','ACTIVE',now(),now(),now())
-    ON CONFLICT (store_id,user_id) DO NOTHING`;
+  for (const [user, role] of [
+    [OWNER, "STORE_ADMIN"],
+    [DRIVER, "DELIVERY"],
+  ] as const) {
+    await db.$executeRaw`
+      INSERT INTO store_memberships (id,store_id,user_id,role,status,accepted_at,created_at,updated_at)
+      VALUES (gen_random_uuid(),${STORE},${user},${role}::"MembershipRole",'ACTIVE',now(),now(),now())
+      ON CONFLICT (store_id,user_id) DO NOTHING`;
+  }
 
   console.log("seeded morse-ave-bakery");
   console.log(`  storefront: /stores/morse-ave-bakery`);
   console.log(`  staff:      /store/${STORE}/ops/orders`);
+  console.log(`  deliveries: /store/${STORE}/ops/deliveries`);
   console.log(`  sign in as: ${OWNER_EMAIL} / ${OWNER_PASSWORD}`);
+  console.log(`          or: ${DRIVER_EMAIL} (a driver — same password)`);
 }
 
 main()

@@ -28,10 +28,11 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 523 tests passing. A shop can list products, take an order online or over
-the counter, work the queue, take cash or card, refund, print a receipt, run a
-promotion, and be billed for the platform itself.
+**Phases 2, 4, 5, 7 and 8 complete, Phase 9 all but signature capture; the
+worker, the outbox and billing are in.** 531 tests passing. A shop can list
+products, take an order online or over the counter, work the queue, take cash
+or card, refund, print a receipt, run a promotion, send a parcel out with a
+driver and get a photograph back, and be billed for the platform itself.
 
 Stripe has been exercised against real test keys end to end — a real Connect
 account, real charges, real refunds — not only against the fake provider.
@@ -156,12 +157,30 @@ number as a `tel:` link and the address as a maps link, and the previous failure
 shown before setting off. Reporting a failure is one tap from the card rather
 than a menu, because a driver doing it is standing in the rain.
 
-**Notifications** — a catalogue of what the platform will tell somebody about
-(§5.9), one service that decides whether they hear it, and store-branded
-templates. Customers now get email when an order is confirmed, ready, on its
-way, delivered or cancelled — until this, placing an order and hearing nothing
-was the actual behaviour. Messages name the shop rather than the platform: four
-local shops should look like four shops in an inbox.
+**Proof of delivery** — the driver photographs where they left the parcel, and
+the shop sees the photograph on the order. It is the answer to "it never
+arrived", which is otherwise one person's word against another's.
+
+The photograph is uploaded when it is taken rather than when the delivery is
+completed, so the seconds it costs are spent walking back to the van instead of
+in front of a button somebody is waiting on. The preview is the local file,
+shown the instant the camera closes — but "saved" is said separately, because "I
+can see it" and "the shop can see it" are different facts and only one survives
+a lost signal.
+
+Proofs live under the private prefix and are read only through a URL that
+carries its own signature and expires in ten minutes, because the reader is an
+`<img>` tag and an `<img>` tag has no session (§13.5). The URL is minted per
+read rather than stored, so it cannot go stale in a row somebody looks at
+months later. Read grants are signed with a key derived from — but not equal to
+— the upload key: both are HMACs over a JSON payload, and one key would let
+each be presented as the other with only the field names to notice.
+
+What is attached is checked at the moment somebody could still take another
+picture: the asset must exist, belong to this shop, be a proof rather than a
+product photo, and have finished processing. The foreign key proves a row
+exists somewhere, not that it belongs here — and a still-processing asset
+stored as proof would fail to load for good.
 
 Preferences are per person, and per shop if somebody wants that — a customer of
 four stores who only wants to hear from their bakery sets one row. Absence of a
@@ -588,11 +607,18 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Inventory management surfaces** — receiving, count sessions, low-stock
-   alerts. The ledger and reservation semantics they build on are done.
-2. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
+1. **Signature capture** — the remaining half of proof (§Phase 9). A canvas
+   rather than a camera, but the same upload path and the same private prefix,
+   so what is left is the drawing surface and undoing a bad stroke.
+2. **Reporting and dashboards** (Phase 10) — the sales, inventory and platform
+   figures every screen currently implies but nothing computes.
+3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
    already-tested linking logic. Needs real Google credentials.
-3. **Phases 9–12**: delivery, reporting, hardening, deployment.
+4. **Phases 11–12**: hardening, then deployment.
+
+Deliberately not next: the offline queue with Background Sync for driver
+updates (§11.8). It is worth building, and it is worth building against a real
+phone on real signal rather than against an assumption about one.
 
 Before starting a phase, read its entry in `docs/plan/15-development-roadmap.md`
 and the risk register in §16. Record any deviation from the plan as an ADR

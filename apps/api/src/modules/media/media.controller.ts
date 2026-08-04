@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Put, Req } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Req, Res } from "@nestjs/common";
+import type { Response } from "express";
 import { z } from "zod";
 import type { Permission } from "@bba/shared";
 import { Public } from "../../common/decorators/public.decorator.js";
@@ -161,5 +162,62 @@ export class MediaUploadController {
 
     await this.storage.putQuarantine(grant.key, body);
     return { bytes: body.length };
+  }
+}
+
+/**
+ * The local stand-in for a presigned S3 GET of a private object.
+ *
+ * Public in the same sense as the upload route: the signature *is* the
+ * authority, because the reader is an `<img>` tag and an `<img>` tag carries no
+ * session. Whoever minted the URL had already established that this person may
+ * see this photograph; nothing here can re-establish it.
+ *
+ * The token names one key and expires. It does not name a store, a user, or a
+ * delivery — so a stolen URL is worth exactly one photograph for ten minutes,
+ * and enumerating is no easier than forging an HMAC.
+ */
+@Controller({ path: "media/private", version: "1" })
+export class MediaPrivateController {
+  constructor(private readonly storage: StorageProvider) {}
+
+  @Public()
+  @Get(":token")
+  async read(@Param("token") token: string, @Res() res: Response): Promise<void> {
+    if (!(this.storage instanceof LocalDiskStorage)) throw AppError.notFound();
+
+    let grant;
+    try {
+      grant = this.storage.verifyReadGrant(token);
+    } catch {
+      throw AppError.forbidden("This link is not valid.");
+    }
+
+    let body: Buffer;
+    try {
+      body = await this.storage.readPrivate(grant.key);
+    } catch {
+      // A validly signed key with nothing behind it means the asset was
+      // purged — proof photographs are kept a year (§13.7) — or never finished
+      // processing. Either way there is nothing to show.
+      throw AppError.notFound();
+    }
+
+    res
+      .set({
+        // Never stored, and never held by a shared cache: these are
+        // photographs of somebody's doorway. The URL expires; a cached copy
+        // would outlive it.
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        // The web app and the API differ in origin in every environment, so
+        // Helmet's same-origin default would stop the shop's own page
+        // embedding this.
+        "Cross-Origin-Resource-Policy": "cross-origin",
+      })
+      // Every processed variant is WebP; the worker re-encodes whatever
+      // arrived, so there is nothing here to sniff or to get wrong.
+      .type("image/webp")
+      .send(body);
   }
 }

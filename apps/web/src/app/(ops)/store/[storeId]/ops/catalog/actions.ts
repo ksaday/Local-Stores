@@ -45,45 +45,10 @@ export async function importCatalogCsv(
 }
 
 // ── Product photos (plan §13.7) ────────────────────────────────────────────
-
-export interface UploadGrant {
-  assetId: string;
-  upload: { url: string; method: "PUT"; headers: Record<string, string>; maxBytes: number };
-}
-
-/**
- * Step one: ask the API where to put the file.
- *
- * The browser does the PUT itself, straight to storage, which is the whole
- * point of the three-step flow — the bytes never pass through this app or the
- * API. All that crosses here is a declared type and a size.
- */
-export async function requestImageUpload(
-  storeId: string,
-  input: { mime: string; bytes: number; originalName?: string },
-): Promise<UploadGrant> {
-  return api<UploadGrant>(`/stores/${storeId}/media/upload-url`, {
-    method: "POST",
-    body: { kind: "PRODUCT", ...input },
-  });
-}
-
-export interface AssetState {
-  assetId: string;
-  status: "PENDING" | "READY" | "REJECTED";
-  url: string | null;
-  reason?: string;
-}
-
-/** Step three: the file is uploaded; queue it for validation and re-encoding. */
-export async function completeImageUpload(storeId: string, assetId: string): Promise<AssetState> {
-  return api<AssetState>(`/stores/${storeId}/media/${assetId}/complete`, { method: "POST" });
-}
-
-/** Polled while the worker works. Seconds, usually. */
-export async function imageStatus(storeId: string, assetId: string): Promise<AssetState> {
-  return api<AssetState>(`/stores/${storeId}/media/${assetId}`);
-}
+//
+// Getting the file into storage is `lib/upload-image`, shared with delivery
+// proofs. What is specific to the catalog is only what happens afterwards:
+// claiming the finished asset for a product.
 
 /**
  * Attaches a processed asset to a product.

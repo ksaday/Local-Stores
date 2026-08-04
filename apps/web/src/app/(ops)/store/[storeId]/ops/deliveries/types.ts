@@ -1,22 +1,9 @@
-/** Mirrors the API's delivery row. Own module: route files may not export these. */
-export interface DeliveryRow {
-  id: string;
-  order_id: string;
-  order_number: string;
-  order_status: string;
-  contact_phone: string | null;
-  contact_email: string | null;
-  delivery_address: { line1?: string; line2?: string; city?: string; postalCode?: string } | null;
-  driver_user_id: string | null;
-  driver_name: string | null;
-  assigned_at: string | null;
-  picked_up_at: string | null;
-  delivered_at: string | null;
-  failure_reason: string | null;
-  failure_note: string | null;
-  attempts: number;
-  notes: string | null;
-}
+// The row itself lives in `lib/delivery`, because the order workbench reads one
+// too and a page outside this folder should not be importing a route folder's
+// types. What is here is what only this screen needs. Own module either way:
+// route files may not export these.
+export type { DeliveryRow } from "@/lib/delivery";
+import type { DeliveryRow } from "@/lib/delivery";
 
 export interface Driver {
   userId: string;

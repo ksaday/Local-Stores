@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -222,6 +222,27 @@ describe("accepted uploads", () => {
 
     const asset = await asAdmin((a) => a.mediaAsset.findUnique({ where: { id: result.assetId } }));
     expect(asset?.isPrivate).toBe(true);
+  });
+
+  it("reads a proof photo back only through a signed, expiring URL", async () => {
+    const result = await uploadAndProcess({
+      body: await makePng(),
+      declaredMime: "image/jpeg",
+      kind: "PROOF",
+      ownerUserId: OWNER,
+    });
+    const asset = await asAdmin((a) => a.mediaAsset.findUnique({ where: { id: result.assetId } }));
+    const key = `${asset!.storageKey}/medium.webp`;
+
+    const url = await storage.presignRead(key);
+    const token = url.slice(url.lastIndexOf("/") + 1);
+    expect(storage.verifyReadGrant(token).key).toBe(key);
+    // Real bytes, not a promise of them: the whole point of the private prefix
+    // is that something still has to be able to read it.
+    expect((await storage.readPrivate(key)).length).toBeGreaterThan(0);
+
+    // And nothing wrote a copy where the static file server would find it.
+    await expect(readFile(join(storageRoot, "public", key))).rejects.toThrow();
   });
 });
 

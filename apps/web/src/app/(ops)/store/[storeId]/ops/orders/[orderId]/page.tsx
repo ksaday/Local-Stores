@@ -11,7 +11,9 @@ import {
   listRefunds,
   roleInStore,
 } from "@/lib/orders";
+import { loadDelivery } from "@/lib/delivery";
 import { CollectCashButton, OrderActions } from "../order-actions";
+import { DeliveryPanel } from "./delivery-panel";
 import { RefundPanel } from "./refund-panel";
 
 export const metadata: Metadata = { title: "Order" };
@@ -49,6 +51,11 @@ export default async function OrderWorkbench({
   if (settled) {
     refunds = await listRefunds(storeId, orderId).catch(() => []);
   }
+
+  // Only for orders that go out on a van, and only once somebody has touched
+  // the dispatch board — the record is created lazily.
+  const delivery =
+    order.fulfillment === "DELIVERY" ? await loadDelivery(storeId, orderId) : null;
 
   return (
     <div className="mt-8 space-y-6">
@@ -177,6 +184,8 @@ export default async function OrderWorkbench({
               </address>
             )}
           </Card>
+
+          {delivery && <DeliveryPanel delivery={delivery} />}
 
           <Card title="Payment">
             {cashPayment ? (

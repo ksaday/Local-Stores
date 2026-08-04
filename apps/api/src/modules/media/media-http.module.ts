@@ -1,6 +1,10 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module.js";
-import { MediaController, MediaUploadController } from "./media.controller.js";
+import {
+  MediaController,
+  MediaPrivateController,
+  MediaUploadController,
+} from "./media.controller.js";
 
 /**
  * The media routes, kept apart from `MediaModule`.
@@ -13,6 +17,6 @@ import { MediaController, MediaUploadController } from "./media.controller.js";
  */
 @Module({
   imports: [AuthModule],
-  controllers: [MediaController, MediaUploadController],
+  controllers: [MediaController, MediaUploadController, MediaPrivateController],
 })
 export class MediaHttpModule {}

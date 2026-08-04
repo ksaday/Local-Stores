@@ -46,6 +46,24 @@ export abstract class StorageProvider {
   abstract publicUrl(key: string): string;
 
   /**
+   * A URL that reads one private object, and stops working shortly after.
+   *
+   * Delivery proofs are photographs of somebody's doorway and their
+   * handwriting, so they are never CDN-served and never guessable (§13.5).
+   * They are also read by an `<img>` tag, which sends no Authorization header
+   * and cannot be made to — hence a URL carrying its own authority rather than
+   * a route behind the guards.
+   *
+   * Short-lived because the URL will end up in a server-rendered page, a
+   * screenshot, a shared link. Long enough to look at the photograph; not long
+   * enough to be a distribution channel.
+   */
+  abstract presignRead(key: string, ttlMs?: number): Promise<string>;
+
+  /** Reads a processed private object. Only ever through `presignRead`. */
+  abstract readPrivate(key: string): Promise<Buffer>;
+
+  /**
    * URL of one processed variant of an asset.
    *
    * `storageKey` names a folder, not a file: the worker writes `thumb.webp`,
@@ -67,6 +85,8 @@ export interface LocalDiskOptions {
   publicBaseUrl: string;
   /** Where the local stand-in for a presigned PUT is served. */
   uploadBaseUrl: string;
+  /** Where the local stand-in for a presigned GET is served. */
+  readBaseUrl: string;
   /** Signs upload grants. See `presignUpload`. */
   uploadSecret: string;
   /** How long a grant is good for. Defaults to 15 minutes. */
@@ -82,8 +102,25 @@ export interface UploadGrant {
   exp: number;
 }
 
+/** What a signed local read token permits. */
+export interface ReadGrant {
+  key: string;
+  /** Epoch milliseconds. */
+  exp: number;
+}
+
 /** Default life of an upload grant. S3's presigned URLs are commonly similar. */
 const DEFAULT_UPLOAD_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Default life of a read grant.
+ *
+ * Shorter than an upload's, and for a different reason: an upload grant is
+ * held by the one client doing the upload, while a read URL is rendered into a
+ * page and travels — into a browser history, a screenshot, a pasted link. Ten
+ * minutes is long enough to open the photograph and look at it.
+ */
+const DEFAULT_READ_TTL_MS = 10 * 60 * 1000;
 
 const QUARANTINE = "quarantine";
 const PUBLIC = "public";
@@ -94,7 +131,18 @@ export class LocalDiskStorage extends StorageProvider {
   private readonly root: string;
   private readonly baseUrl: string;
   private readonly uploadBaseUrl: string;
+  private readonly readBaseUrl: string;
   private readonly uploadSecret: string;
+  /**
+   * A separate key for read grants, derived from the upload one.
+   *
+   * Both grants are HMACs over a JSON payload, so a single key would let an
+   * upload token be presented as a read token and the other way round —
+   * the signature checks out, and only the field names differ. Separate keys
+   * make that a verification failure rather than something the parsing has to
+   * be careful about.
+   */
+  private readonly readSecret: string;
   private readonly uploadTtlMs: number;
 
   constructor(options: LocalDiskOptions) {
@@ -102,7 +150,9 @@ export class LocalDiskStorage extends StorageProvider {
     this.root = options.root;
     this.baseUrl = options.publicBaseUrl;
     this.uploadBaseUrl = options.uploadBaseUrl;
+    this.readBaseUrl = options.readBaseUrl;
     this.uploadSecret = options.uploadSecret;
+    this.readSecret = createHmac("sha256", options.uploadSecret).update("read").digest("hex");
     this.uploadTtlMs = options.uploadTtlMs ?? DEFAULT_UPLOAD_TTL_MS;
   }
 
@@ -122,7 +172,7 @@ export class LocalDiskStorage extends StorageProvider {
   async presignUpload(key: string, mime: string, maxBytes: number): Promise<PresignedUpload> {
     const expiresAt = new Date(Date.now() + this.uploadTtlMs);
     const grant: UploadGrant = { key, mime, maxBytes, exp: expiresAt.getTime() };
-    const token = this.signGrant(grant);
+    const token = this.sign(grant, this.uploadSecret);
 
     return {
       url: `${this.uploadBaseUrl.replace(/\/$/, "")}/${token}`,
@@ -140,27 +190,48 @@ export class LocalDiskStorage extends StorageProvider {
    * grant or a forged one, and neither should be distinguishable to the caller.
    */
   verifyGrant(token: string): UploadGrant {
-    const [payload, signature] = token.split(".");
-    if (!payload || !signature) throw new Error("Malformed upload token.");
+    return this.verify<UploadGrant>(token, this.uploadSecret);
+  }
 
-    const expected = createHmac("sha256", this.uploadSecret).update(payload).digest("base64url");
+  /**
+   * The local stand-in for a presigned S3 GET.
+   *
+   * The signed key is the whole authority — the route serving it has no
+   * session, exactly as CloudFront has none. Whoever hands out the URL has
+   * already decided the reader is entitled to it.
+   */
+  async presignRead(key: string, ttlMs: number = DEFAULT_READ_TTL_MS): Promise<string> {
+    const grant: ReadGrant = { key, exp: Date.now() + ttlMs };
+    return `${this.readBaseUrl.replace(/\/$/, "")}/${this.sign(grant, this.readSecret)}`;
+  }
+
+  /** Checks a read grant. Throws for forged, malformed and expired alike. */
+  verifyReadGrant(token: string): ReadGrant {
+    return this.verify<ReadGrant>(token, this.readSecret);
+  }
+
+  private sign(grant: UploadGrant | ReadGrant, secret: string): string {
+    const payload = Buffer.from(JSON.stringify(grant)).toString("base64url");
+    const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+    return `${payload}.${signature}`;
+  }
+
+  private verify<T extends { exp: number }>(token: string, secret: string): T {
+    const [payload, signature] = token.split(".");
+    if (!payload || !signature) throw new Error("Malformed token.");
+
+    const expected = createHmac("sha256", secret).update(payload).digest("base64url");
     // Constant-time: a length-varying compare leaks the signature a byte at a
     // time to anyone willing to make enough requests.
     const given = Buffer.from(signature);
     const want = Buffer.from(expected);
     if (given.length !== want.length || !timingSafeEqual(given, want)) {
-      throw new Error("Invalid upload token.");
+      throw new Error("Invalid token.");
     }
 
-    const grant = JSON.parse(Buffer.from(payload, "base64url").toString()) as UploadGrant;
-    if (Date.now() > grant.exp) throw new Error("This upload link has expired.");
+    const grant = JSON.parse(Buffer.from(payload, "base64url").toString()) as T;
+    if (Date.now() > grant.exp) throw new Error("This link has expired.");
     return grant;
-  }
-
-  private signGrant(grant: UploadGrant): string {
-    const payload = Buffer.from(JSON.stringify(grant)).toString("base64url");
-    const signature = createHmac("sha256", this.uploadSecret).update(payload).digest("base64url");
-    return `${payload}.${signature}`;
   }
 
   async putQuarantine(key: string, body: Buffer): Promise<void> {
@@ -184,6 +255,10 @@ export class LocalDiskStorage extends StorageProvider {
 
   async putProcessed(key: string, body: Buffer, isPrivate: boolean): Promise<void> {
     await this.write(join(isPrivate ? PRIVATE : PUBLIC, key), body);
+  }
+
+  async readPrivate(key: string): Promise<Buffer> {
+    return readFile(this.safePath(join(PRIVATE, key)));
   }
 
   publicUrl(key: string): string {

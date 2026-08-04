@@ -43,6 +43,22 @@ export class DeliveryController {
     return this.delivery.queueFor(storeId, req.auth.sub);
   }
 
+  /**
+   * One order's delivery, for whoever is looking at that order.
+   *
+   * `orders:read` rather than a delivery permission: this is a fact about an
+   * order — who took it, when it was handed over, the photograph of the
+   * doorstep — and the person fielding "it never arrived" is a clerk, who can
+   * already see the order and the address the photograph was taken at.
+   *
+   * Declared after `mine`, or "mine" would be read as an order id.
+   */
+  @Get(":orderId")
+  @RequirePermission("orders:read")
+  forOrder(@Param("storeId") storeId: string, @Param("orderId") orderId: string) {
+    return this.delivery.one(storeId, orderId);
+  }
+
   @Post(":orderId/assign")
   @RequirePermission("delivery:assign")
   @HttpCode(200)

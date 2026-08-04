@@ -11,6 +11,7 @@ export function testStorage(root: string, publicBaseUrl = "http://localhost:3100
     root,
     publicBaseUrl,
     uploadBaseUrl: "http://localhost:3100/api/v1/media/upload",
+    readBaseUrl: "http://localhost:3100/api/v1/media/private",
     uploadSecret: "test-upload-secret",
   };
 }

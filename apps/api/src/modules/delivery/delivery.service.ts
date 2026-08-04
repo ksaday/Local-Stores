@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { StorageProvider } from "../../infra/storage/storage.provider.js";
 import { AuditService } from "../audit/audit.service.js";
 import { OrdersService } from "../orders/orders.service.js";
 
@@ -33,6 +34,15 @@ export interface DeliveryRow {
   failure_note: string | null;
   attempts: number;
   notes: string | null;
+  /**
+   * Short-lived URLs, minted per read, or null when nobody took a photograph.
+   *
+   * Not asset ids: an id would need a second authorized round trip per row to
+   * turn into something an `<img>` can load, and the caller is already
+   * authorized — that is how they got the row.
+   */
+  proof_url: string | null;
+  signature_url: string | null;
 }
 
 /**
@@ -52,6 +62,7 @@ export class DeliveryService {
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
     private readonly audit: AuditService,
+    private readonly storage: StorageProvider,
   ) {}
 
   /**
@@ -163,6 +174,13 @@ export class DeliveryService {
     input: { proofMediaAssetId?: string; signatureMediaAssetId?: string; notes?: string } = {},
   ): Promise<DeliveryRow> {
     await this.assertAssignedTo(storeId, orderId, actorUserId);
+    if (input.proofMediaAssetId) {
+      await this.assertUsableProof(storeId, input.proofMediaAssetId, "PROOF");
+    }
+    if (input.signatureMediaAssetId) {
+      await this.assertUsableProof(storeId, input.signatureMediaAssetId, "SIGNATURE");
+    }
+
     await this.orders.transition(storeId, orderId, "DELIVERED", {
       userId: actorUserId,
       role: "DELIVERY",
@@ -281,14 +299,22 @@ export class DeliveryService {
     filters: { orderId?: string; driverUserId?: string; outstandingOnly?: boolean },
   ): Promise<DeliveryRow[]> {
     const rows = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
-      tx.$queryRaw<(DeliveryRow & { driver_name: null })[]>`
+      tx.$queryRaw<(DeliveryRow & { proof_key: string | null; signature_key: string | null })[]>`
         SELECT d.id, d.order_id, o.order_number, o.status::text AS order_status,
                o.contact_phone, o.contact_email, o.delivery_address,
                d.driver_user_id, NULL::text AS driver_name,
                d.assigned_at, d.picked_up_at, d.delivered_at,
-               d.failure_reason::text, d.failure_note, d.attempts, d.notes
+               d.failure_reason::text, d.failure_note, d.attempts, d.notes,
+               NULL::text AS proof_url, NULL::text AS signature_url,
+               -- Only once the worker has finished with it. A PENDING asset has
+               -- no processed variant on disk yet, so a URL for one is a URL
+               -- that 404s.
+               CASE WHEN proof.status = 'READY' THEN proof.storage_key END AS proof_key,
+               CASE WHEN sig.status = 'READY' THEN sig.storage_key END AS signature_key
         FROM deliveries d
         JOIN orders o ON o.id = d.order_id
+        LEFT JOIN media_assets proof ON proof.id = d.proof_media_asset_id
+        LEFT JOIN media_assets sig ON sig.id = d.signature_media_asset_id
         WHERE d.store_id = ${storeId}
           AND (${filters.orderId ?? null}::text IS NULL OR d.order_id = ${filters.orderId ?? null})
           AND (${filters.driverUserId ?? null}::text IS NULL
@@ -304,18 +330,70 @@ export class DeliveryService {
     // members of the current store, and a driver has no membership row until
     // they accept their invitation — the same trap as everywhere else.
     const ids = [...new Set(rows.map((r) => r.driver_user_id).filter(Boolean))] as string[];
-    if (ids.length === 0) return rows;
+    const names = new Map<string, string>();
+    if (ids.length > 0) {
+      const drivers = await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
+        tx.$queryRaw<{ id: string; name: string }[]>`
+          SELECT id, name FROM users WHERE id = ANY(${ids})`,
+      );
+      for (const driver of drivers) names.set(driver.id, driver.name);
+    }
 
-    const drivers = await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
-      tx.$queryRaw<{ id: string; name: string }[]>`
-        SELECT id, name FROM users WHERE id = ANY(${ids})`,
+    return Promise.all(
+      rows.map(async ({ proof_key, signature_key, ...row }) => ({
+        ...row,
+        driver_name: row.driver_user_id ? (names.get(row.driver_user_id) ?? null) : null,
+        proof_url: await this.viewUrl(proof_key),
+        signature_url: await this.viewUrl(signature_key),
+      })),
     );
-    const names = new Map(drivers.map((d) => [d.id, d.name]));
+  }
 
-    return rows.map((row) => ({
-      ...row,
-      driver_name: row.driver_user_id ? (names.get(row.driver_user_id) ?? null) : null,
-    }));
+  /**
+   * A URL for one processed private image, or null if there is no image.
+   *
+   * `medium` rather than `original`: this is looked at on a phone, and a
+   * photograph of a doorstep at full camera resolution is several megabytes to
+   * answer a question the thumbnail nearly answers.
+   */
+  private async viewUrl(storageKey: string | null): Promise<string | null> {
+    if (!storageKey) return null;
+    return this.storage.presignRead(`${storageKey}/medium.webp`);
+  }
+
+  /**
+   * The photograph is real, finished, and this shop's.
+   *
+   * Without this the asset id is simply whatever the client sent: the foreign
+   * key proves a row exists somewhere, not that it belongs here, and a
+   * still-processing asset would be stored as proof of a delivery and then
+   * fail to load for good. Both are caught at the moment somebody could still
+   * take another picture, rather than weeks later during a dispute.
+   */
+  private async assertUsableProof(
+    storeId: string,
+    assetId: string,
+    kind: "PROOF" | "SIGNATURE",
+  ): Promise<void> {
+    const [asset] = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<{ status: string; kind: string; store_id: string | null }[]>`
+        SELECT status::text, kind::text, store_id FROM media_assets WHERE id = ${assetId}
+      `,
+    );
+
+    // One message for "belongs to another shop", "isn't a photograph" and
+    // "doesn't exist": they are the same mistake from the driver's side, and
+    // distinguishing them describes other shops' data to whoever is guessing.
+    if (!asset || asset.store_id !== storeId || asset.kind !== kind) {
+      throw AppError.validation("That photo isn't one this shop can use.");
+    }
+    if (asset.status !== "READY") {
+      throw AppError.validation(
+        asset.status === "REJECTED"
+          ? "That photo couldn't be used. Take another one."
+          : "That photo is still uploading. Give it a moment.",
+      );
+    }
   }
 
   /** Only somebody who can actually drive for this shop. */
