@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { api, getCurrentUser, ApiError } from "@/lib/api";
+import { unreadCount } from "@/lib/notifications";
 import { AppShell, StatusBadge } from "@/components/shell";
 import type { Store } from "@/lib/types";
 
@@ -11,7 +12,7 @@ export default async function OpsLayout({
   params: Promise<{ storeId: string }>;
 }) {
   const { storeId } = await params;
-  const user = await getCurrentUser();
+  const [user, unread] = await Promise.all([getCurrentUser(), unreadCount()]);
   if (!user) redirect("/signin");
 
   // The API is the authority: a caller with no membership gets 404, not 403,
@@ -35,6 +36,7 @@ export default async function OpsLayout({
       title={store.name}
       // Orders first: it is the screen staff live in all day, and the one
       // they need to reach without thinking.
+      unreadCount={unread}
       nav={[
         { href: `${base}/orders`, label: "Orders" },
         { href: `${base}/till`, label: "Till" },

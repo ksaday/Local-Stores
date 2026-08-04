@@ -110,7 +110,9 @@ describe("telling a customer about their order", () => {
     expect(item!.title).toContain("Morse Ave Bakery");
     expect(item!.store_name).toBe("Morse Ave Bakery");
     expect(item!.body).toContain("$17.50");
-    // Somewhere to go and act on it, or it is a diary entry.
+    // The address goes in the link, not the prose: there is a button for it,
+    // and a pasted URL underneath is a habit from email.
+    expect(item!.body).not.toContain("http");
     expect(item!.link).toBe(`/orders/${orderId}`);
     expect(item!.read_at).toBeNull();
   });

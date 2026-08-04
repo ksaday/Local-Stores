@@ -126,7 +126,10 @@ describe("low-stock alerts", () => {
 
     await alerts.run();
 
-    const told = (await mine()).map((m) => m.user_id).sort();
+    const rows = await mine();
+    // And it points at the reorder list, filtered to what is low.
+    expect(rows[0]!.link).toContain("/ops/inventory?low=1");
+    const told = rows.map((m) => m.user_id).sort();
     // The owner and the inventory manager. Not the clerk — being able to sell
     // a loaf is not being able to order more of them.
     expect(told).toEqual([OWNER, MANAGER].sort());
@@ -143,7 +146,8 @@ describe("low-stock alerts", () => {
     // Judgeable without opening anything.
     expect(body).toMatch(/3 left, reorder at 10/);
     expect(body).toContain("usually order 40");
-    expect(body).toContain(`/store/${STORE}/ops/inventory`);
+    // The link is on the notification; the body is prose.
+    expect(body).not.toContain("http");
   });
 
   it("says nothing when nothing is low", async () => {

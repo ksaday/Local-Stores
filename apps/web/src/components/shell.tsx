@@ -81,11 +81,14 @@ export function AppShell({
   eyebrow,
   title,
   nav,
+  unreadCount = 0,
   children,
 }: {
   eyebrow: string;
   title: string;
   nav: { href: string; label: string }[];
+  /** Notifications waiting. Zero renders the link without a badge. */
+  unreadCount?: number;
   children: ReactNode;
 }) {
   return (
@@ -96,9 +99,28 @@ export function AppShell({
             <p className="text-xs font-medium uppercase tracking-wide text-brand">{eyebrow}</p>
             <p className="text-sm font-semibold text-ink">{title}</p>
           </div>
-          <Link href="/account" className="text-sm text-ink-muted underline underline-offset-4">
-            Account
-          </Link>
+          <div className="flex items-center gap-4">
+            {/* Communications live in the app (ADR 0001), so this is the only
+                place anybody finds out about them — it sits in the header of
+                every operational screen rather than behind Account. */}
+            <Link
+              href="/notifications"
+              className="flex items-center gap-1.5 text-sm text-ink-muted underline underline-offset-4"
+            >
+              Notifications
+              {unreadCount > 0 && (
+                <span
+                  className="rounded-full bg-brand px-2 py-0.5 text-xs font-medium text-brand-ink no-underline"
+                  aria-label={`${unreadCount} unread`}
+                >
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
+            </Link>
+            <Link href="/account" className="text-sm text-ink-muted underline underline-offset-4">
+              Account
+            </Link>
+          </div>
         </div>
         <nav aria-label={`${eyebrow} sections`} className="mx-auto max-w-5xl px-6">
           <ul className="flex gap-1 overflow-x-auto">

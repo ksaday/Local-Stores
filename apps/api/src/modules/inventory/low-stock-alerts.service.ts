@@ -13,8 +13,8 @@ interface Recipient {
   name: string;
 }
 
-/** Enough to act on; beyond this the mail is a wall of text nobody reads. */
-const MAX_LINES_IN_MAIL = 25;
+/** Enough to act on; beyond this it is a wall of text nobody reads. */
+const MAX_LINES_SHOWN = 25;
 
 /**
  * Tells the people who order stock what has run down (plan Phase 6).
@@ -64,7 +64,7 @@ export class LowStockAlerts {
             storeId,
             event: "inventory.low_stock",
             title: subjectFor(to.store_name, low.length),
-            body: bodyFor(to, low, this.inventoryUrl(storeId)),
+            body: bodyFor(to, low),
             link: `/store/${storeId}/ops/inventory?low=1`,
           });
         }
@@ -141,8 +141,8 @@ function subjectFor(storeName: string, count: number): string {
     : `${storeName}: ${count} items need reordering`;
 }
 
-function bodyFor(to: Recipient, low: StockRow[], url: string): string {
-  const shown = low.slice(0, MAX_LINES_IN_MAIL);
+function bodyFor(to: Recipient, low: StockRow[]): string {
+  const shown = low.slice(0, MAX_LINES_SHOWN);
   const lines = shown
     .map((row) => {
       const label = [row.product_name, describeAttrs(row.attrs), row.sku && `(${row.sku})`]
@@ -158,13 +158,14 @@ function bodyFor(to: Recipient, low: StockRow[], url: string): string {
   const more =
     low.length > shown.length ? `\n  …and ${low.length - shown.length} more.\n` : "";
 
+  // No greeting and no URL: this is read on a screen the reader already has
+  // open, next to a link they can press. Both were habits from when it was an
+  // email.
   return (
-    `Morning ${to.name.split(" ")[0]},\n\n` +
-    `These are at or below the level you set for reordering at ${to.store_name}:\n\n` +
+    `At or below the level you set for reordering at ${to.store_name}:\n\n` +
     `${lines}\n${more}\n` +
-    `The full list, with history:\n${url}\n\n` +
-    `Counts include stock already promised to orders that haven't been collected, ` +
-    `so these are what you can actually sell.\n`
+    `Counts include stock already promised to orders that haven't been ` +
+    `collected, so these are what you can actually sell.\n`
   );
 }
 

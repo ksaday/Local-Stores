@@ -130,6 +130,12 @@ Preferences are per person and per shop, and the absence of a row means the
 default. Transactional messages are outside the preference system and refuse to
 be switched off — a switch that does nothing is worse than no switch.
 
+The inbox has a screen and a badge in every operational header, because a
+notification nobody can find is not a notification. Unread is carried by weight
+and a marker rather than a background wash: a page of highlighted rows has no
+emphasis at all. The preference switches sit under the list, so the answer to
+"why am I seeing this" is on the same page as the thing prompting it.
+
 **Deliveries** — a dispatch board of everything still to go out, per-driver
 rounds, pick-up, hand-over with proof, and failures with a reason and an
 attempt count. Deliberately *not* a second state machine: the order's own

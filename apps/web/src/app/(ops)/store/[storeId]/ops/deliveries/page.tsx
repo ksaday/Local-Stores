@@ -20,7 +20,11 @@ async function readIfPermitted<T>(work: () => Promise<T>): Promise<T | null> {
   try {
     return await work();
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 403 || err.status === 404)) return null;
+    // 401 as well as 403/404: Next renders the page and its layout together,
+    // so a signed-out visitor's fetches fire before the layout's redirect
+    // lands. They still end up at /signin — this only stops the attempt being
+    // logged as an error nobody can act on.
+    if (err instanceof ApiError && [401, 403, 404].includes(err.status)) return null;
     throw err;
   }
 }

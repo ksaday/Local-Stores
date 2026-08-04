@@ -95,7 +95,6 @@ export class NotificationsService {
       totalCents: order.total_cents,
       currency: order.currency,
       fulfillment: order.fulfillment,
-      orderUrl: `${this.webOrigin()}/orders/${orderId}`,
       reason: order.cancel_reason ?? undefined,
     });
     if (!message) return false;
