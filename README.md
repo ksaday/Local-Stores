@@ -119,6 +119,14 @@ three unrelated events. A driver may only move their own parcels; a store admin
 can close out a round somebody left open. Proof photos and signatures go to the
 private media prefix, never the public one.
 
+The screen carries both audiences: a driver sees their own round, a dispatcher
+sees the board, and whoever has both sees both — with anything already on their
+round left off the board rather than listed twice. The driver half is built for
+a phone at the kerb: full-width buttons, the address as one line, the customer's
+number as a `tel:` link and the address as a maps link, and the previous failure
+shown before setting off. Reporting a failure is one tap from the card rather
+than a menu, because a driver doing it is standing in the rain.
+
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order
 workbench with items, contact, payment and full history, and cash collection.
