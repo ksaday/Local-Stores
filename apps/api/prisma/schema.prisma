@@ -91,6 +91,7 @@ model User {
   orders             Order[]
   storeRelations     CustomerStoreRelation[]
   notificationPreferences NotificationPreference[]
+  notifications           Notification[]
 
   @@map("users")
 }
@@ -956,6 +957,29 @@ model StoreSubscription {
   plan  Plan  @relation(fields: [planCode], references: [code])
 
   @@map("store_subscriptions")
+}
+
+/// One thing somebody has been told, waiting in their inbox. Communications
+/// happen in the app rather than by mail — see docs/adr/0001.
+model Notification {
+  id      String  @id @default(uuid())
+  userId  String  @map("user_id")
+  /// Which shop it concerns. Null for anything about the account itself.
+  /// Cascades: a notice about a shop that no longer exists says nothing.
+  storeId String? @map("store_id")
+  event   String
+  title   String
+  body    String
+  /// Where to go to act on it. Without one it is a diary entry.
+  link    String?
+
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)], map: "notifications_feed")
+  @@map("notifications")
 }
 
 /// Somebody's choice about one kind of message on one channel. Absence means

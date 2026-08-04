@@ -1,11 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { Env } from "../../config/env.js";
-import { Mailer } from "../../infra/mailer/mailer.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { InventoryService, type StockRow } from "./inventory.service.js";
 
 interface Recipient {
+  user_id: string;
   store_id: string;
   store_name: string;
   email: string;
@@ -19,8 +20,11 @@ const MAX_LINES_IN_MAIL = 25;
  * Tells the people who order stock what has run down (plan Phase 6).
  *
  * A daily digest rather than an alert per line. A shop that sells out of six
- * things on a Saturday does not need six emails, and the useful artefact is one
- * list somebody takes to a supplier.
+ * things on a Saturday does not need six notices, and the useful artefact is
+ * one list somebody takes to a supplier.
+ *
+ * In-app: whoever orders stock is in this application every day, so the shelf
+ * list belongs beside the stock screen rather than in a mail client (ADR 0001).
  *
  * There is no "already told you" table, and deliberately: the scheduler's lease
  * makes this run once a day per fleet, so the interval *is* the throttle. A
@@ -33,7 +37,7 @@ export class LowStockAlerts {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
-    private readonly mailer: Mailer,
+    private readonly notifications: NotificationsService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -55,10 +59,13 @@ export class LowStockAlerts {
         }
 
         for (const to of recipients) {
-          await this.mailer.send({
-            to: to.email,
-            subject: subjectFor(to.store_name, low.length),
+          await this.notifications.deliver({
+            userId: to.user_id,
+            storeId,
+            event: "inventory.low_stock",
+            title: subjectFor(to.store_name, low.length),
             body: bodyFor(to, low, this.inventoryUrl(storeId)),
+            link: `/store/${storeId}/ops/inventory?low=1`,
           });
         }
         notified += 1;
@@ -105,12 +112,12 @@ export class LowStockAlerts {
   private async recipientsFor(storeId: string): Promise<Recipient[]> {
     return this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
       tx.$queryRaw<Recipient[]>`
-        SELECT DISTINCT st.id AS store_id, st.name AS store_name, u.email, u.name
+        SELECT DISTINCT u.id AS user_id, st.id AS store_id, st.name AS store_name, u.email, u.name
         FROM stores st
         JOIN users u ON u.id = st.owner_user_id
         WHERE st.id = ${storeId} AND u.status = 'ACTIVE'
         UNION
-        SELECT DISTINCT st.id, st.name, u.email, u.name
+        SELECT DISTINCT u.id, st.id, st.name, u.email, u.name
         FROM store_memberships m
         JOIN stores st ON st.id = m.store_id
         JOIN users u ON u.id = m.user_id

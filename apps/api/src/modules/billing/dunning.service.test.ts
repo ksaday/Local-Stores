@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryMailer } from "../../infra/mailer/mailer.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { GRACE_PERIOD_DAYS } from "./billing.service.js";
 import { DunningService } from "./dunning.service.js";
@@ -27,7 +28,7 @@ beforeEach(async () => {
   await cleanup();
   await seed();
   mailer = new InMemoryMailer();
-  dunning = new DunningService(prisma, mailer, config);
+  dunning = new DunningService(prisma, mailer, new NotificationsService(prisma, mailer, config), config);
 });
 
 afterAll(async () => {

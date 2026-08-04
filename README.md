@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 520 tests passing. A shop can list products, take an order online or over
+in.** 523 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -107,18 +107,28 @@ workspace you can leave and come back to: pick a shelf, type what is on it, and
 the quantity box keeps focus, because this is used standing up with a phone in
 one hand.
 
-**Notifications** — one place that decides whether somebody hears about
-something, rather than each sender working out its own recipients. Customers now
-get email when an order is placed, packed or ready, sent out, delivered or
-cancelled — until this, a shopper placed an order and heard nothing at all.
-Messages name the shop rather than the platform, because somebody buying from
-four local shops should see four shops in their inbox. A delivery order reaching
-READY says "packed", not "ready", since "ready" reads as "come and get it".
+**Notifications** — communications happen **inside the app**
+([ADR 0001](docs/adr/0001-in-app-communications.md)): customers and staff learn
+what they need from their own dashboard, not from somebody else's mail server.
+An order placed, packed, ready, sent out, delivered or cancelled lands in the
+recipient's inbox; so does a low-stock digest and a delivery put on a driver's
+round. Until this, a shopper placed an order and heard nothing at all.
+
+Nothing leaves the building, which is most of the point: a notification is a
+row written once and read whenever somebody looks, so there is no delivery
+state, no retry and no queue. Messages name the shop rather than the platform,
+because somebody buying from four local shops should be able to tell them
+apart. A delivery order reaching READY says "packed", not "ready", since
+"ready" reads as "come and get it".
+
+Two things stay email, because in-app cannot reach them: account access —
+verification, password reset, invitations, all aimed at somebody who cannot
+sign in — and the billing grace-period warning, whose whole purpose is reaching
+an owner who is *not* signing in. Push and SMS are out of scope, not deferred.
+
 Preferences are per person and per shop, and the absence of a row means the
-default — storing every default would mean a row per user per event at signup
-and a migration every time the catalogue changed. Transactional messages are not
-in the preference system at all and refuse to be switched off: a password reset
-or a cancellation is how the account works, not news somebody may not want.
+default. Transactional messages are outside the preference system and refuse to
+be switched off — a switch that does nothing is worse than no switch.
 
 **Deliveries** — a dispatch board of everything still to go out, per-driver
 rounds, pick-up, hand-over with proof, and failures with a reason and an

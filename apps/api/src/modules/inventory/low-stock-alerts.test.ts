@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { InMemoryMailer } from "../../infra/mailer/mailer.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { InventoryService } from "./inventory.service.js";
@@ -19,14 +19,14 @@ const config = { get: () => "http://localhost:3100" } as never;
 
 let prisma: PrismaService;
 let inventory: InventoryService;
-let mailer: InMemoryMailer;
+let notifications: NotificationsService;
 let alerts: LowStockAlerts;
 
 beforeEach(async () => {
   prisma = prisma ?? new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   inventory = new InventoryService(prisma, new AuditService(prisma));
-  mailer = new InMemoryMailer();
-  alerts = new LowStockAlerts(prisma, inventory, mailer, config);
+  notifications = new NotificationsService(prisma, { send: async () => {} } as never, config);
+  alerts = new LowStockAlerts(prisma, inventory, notifications, config);
   await reset();
 });
 
@@ -80,6 +80,7 @@ async function reset(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   await asAdmin(async (a) => {
+    await a.$executeRaw`DELETE FROM notifications WHERE user_id = ANY(${[OWNER, MANAGER, CLERK]})`;
     await a.$executeRaw`DELETE FROM stock_movements WHERE store_id = ${STORE}`;
     await a.$executeRaw`DELETE FROM stock_levels WHERE store_id = ${STORE}`;
     await a.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
@@ -92,17 +93,22 @@ async function cleanup(): Promise<void> {
 }
 
 /**
- * Mail this store's people received.
+ * What this store's people were told.
  *
  * Filtered rather than counted whole: the sweep looks at every store in the
  * database, and other suites (and the seeded development shop) legitimately
  * have low stock too. Asserting on a global total makes this suite fail for
  * reasons that have nothing to do with it.
  */
-function mine() {
-  const ours = new Set(["ls-owner@example.com", "ls-manager@example.com", "ls-clerk@example.com"]);
-  return mailer.sent.filter((m) => ours.has(m.to));
+async function mine() {
+  const rows = await asAdmin(
+    (a) => a.$queryRaw<{ user_id: string; title: string; body: string; link: string | null }[]>`
+      SELECT user_id, title, body, link FROM notifications
+      WHERE user_id = ANY(${[OWNER, MANAGER, CLERK]}) ORDER BY created_at`,
+  );
+  return rows;
 }
+
 
 /** Puts the one tracked line below its reorder point. */
 async function makeLow(): Promise<void> {
@@ -120,17 +126,17 @@ describe("low-stock alerts", () => {
 
     await alerts.run();
 
-    const to = mine().map((m) => m.to).sort();
+    const told = (await mine()).map((m) => m.user_id).sort();
     // The owner and the inventory manager. Not the clerk — being able to sell
     // a loaf is not being able to order more of them.
-    expect(to).toEqual(["ls-manager@example.com", "ls-owner@example.com"]);
+    expect(told).toEqual([OWNER, MANAGER].sort());
   });
 
   it("says what is left, what triggered it, and how many to order", async () => {
     await makeLow();
     await alerts.run();
 
-    const body = mine()[0]!.body;
+    const body = (await mine())[0]!.body;
     expect(body).toContain("Rye Bread");
     expect(body).toContain("Large");
     expect(body).toContain("RYE-1");
@@ -145,7 +151,7 @@ describe("low-stock alerts", () => {
     await inventory.receive(STORE, OWNER, { variantId: VARIANT, qty: 50 });
 
     await alerts.run();
-    expect(mine()).toHaveLength(0);
+    expect(await mine()).toHaveLength(0);
   });
 
   it("ignores lines nobody asked it to track", async () => {
@@ -153,7 +159,7 @@ describe("low-stock alerts", () => {
     await inventory.setTracking(STORE, OWNER, VARIANT, { tracked: false, reorderPoint: 10 });
 
     await alerts.run();
-    expect(mine()).toHaveLength(0);
+    expect(await mine()).toHaveLength(0);
   });
 
   it("leaves a suspended shop alone", async () => {
@@ -164,15 +170,14 @@ describe("low-stock alerts", () => {
     // A shop that has been taken offline is not reordering anything, and the
     // owner has a more pressing email already.
     await alerts.run();
-    expect(mine()).toHaveLength(0);
+    expect(await mine()).toHaveLength(0);
   });
 
   it("counts stock promised to orders as gone", async () => {
     await inventory.setTracking(STORE, OWNER, VARIANT, { tracked: true, reorderPoint: 10 });
     await inventory.receive(STORE, OWNER, { variantId: VARIANT, qty: 12 });
     await alerts.run();
-    expect(mine()).toHaveLength(0);
-    mailer.clear();
+    expect(await mine()).toHaveLength(0);
 
     // Twelve on the shelf, but eight are spoken for: four are sellable, which
     // is under the line.
@@ -180,7 +185,7 @@ describe("low-stock alerts", () => {
       UPDATE stock_levels SET reserved = 8 WHERE variant_id = ${VARIANT}`);
 
     await alerts.run();
-    expect(mine()[0]!.body).toMatch(/4 left/);
+    expect((await mine())[0]!.body).toMatch(/4 left/);
   });
 
   it("one digest per store, however many lines are low", async () => {
@@ -194,7 +199,8 @@ describe("low-stock alerts", () => {
     await alerts.run();
 
     // Two recipients, one message each — not one per low line.
-    expect(mine()).toHaveLength(2);
-    expect(mine()[0]!.subject).toContain("2 items");
+    const told = await mine();
+    expect(told).toHaveLength(2);
+    expect(told[0]!.title).toContain("2 items");
   });
 });

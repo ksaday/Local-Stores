@@ -13,10 +13,19 @@ export const NOTIFICATION_EVENTS = [
   "order.cancelled",
   "inventory.low_stock",
   "subscription.payment_failed",
+  "delivery.assigned",
 ] as const;
 
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
 
+/**
+ * Where a notification can go.
+ *
+ * `IN_APP` is the channel for business communication (ADR 0001). `EMAIL`
+ * remains declared only for the two things in-app cannot carry — see the ADR.
+ * `PUSH` and `SMS` exist in the database enum and nowhere else: they are out
+ * of scope, not deferred.
+ */
 export type Channel = "EMAIL" | "IN_APP" | "PUSH" | "SMS";
 
 export interface EventDefinition {
@@ -38,42 +47,49 @@ export interface EventDefinition {
 export const EVENT_CATALOG: Record<NotificationEvent, EventDefinition> = {
   "order.placed": {
     label: "Order confirmations",
-    description: "When you place an order, so you have the details in writing.",
-    channels: ["EMAIL"],
+    description: "When you place an order, so you have the details to hand.",
+    channels: ["IN_APP"],
   },
   "order.ready": {
     label: "Ready to collect",
     description: "When a shop has your order waiting.",
-    channels: ["EMAIL"],
+    channels: ["IN_APP"],
   },
   "order.out_for_delivery": {
     label: "Out for delivery",
     description: "When somebody sets off with your order.",
-    channels: ["EMAIL"],
+    channels: ["IN_APP"],
   },
   "order.delivered": {
     label: "Delivered",
     description: "When your order has been handed over.",
-    channels: ["EMAIL"],
+    channels: ["IN_APP"],
   },
   "order.cancelled": {
     label: "Cancellations",
     description: "If an order is cancelled, and what happens to any payment.",
     // Not optional: somebody whose order was cancelled has to be told, or they
     // are waiting for something that is never coming.
-    channels: ["EMAIL"],
+    channels: ["IN_APP"],
     transactional: true,
   },
   "inventory.low_stock": {
     label: "Low stock",
     description: "A daily list of what has run down, if you order stock.",
-    channels: ["EMAIL"],
+    channels: ["IN_APP"],
+  },
+  "delivery.assigned": {
+    label: "Deliveries assigned to you",
+    description: "When somebody puts an order on your round.",
+    channels: ["IN_APP"],
   },
   "subscription.payment_failed": {
     label: "Billing problems",
     description: "If we cannot take payment for your shop's subscription.",
-    // Suppressing this hides a storefront a week later with no warning at all.
-    channels: ["EMAIL"],
+    // Both, and the email is the point: the whole purpose is reaching an owner
+    // who is *not* signing in, so an in-app notice alone is seen only by
+    // somebody who was going to look anyway (ADR 0001).
+    channels: ["IN_APP", "EMAIL"],
     transactional: true,
   },
 };

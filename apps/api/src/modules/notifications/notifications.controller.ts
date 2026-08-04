@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Put, Req } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { z } from "zod";
 import { AppError } from "../../common/errors/app-error.js";
 import type { AuthenticatedRequest } from "../../common/guards/jwt-auth.guard.js";
@@ -25,6 +25,40 @@ const PreferenceSchema = z.object({
 @Controller({ path: "me/notifications", version: "1" })
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
+
+  /**
+   * The inbox. Communications happen here rather than in an inbox somewhere
+   * else (ADR 0001), so this is the screen that has to be worth opening.
+   */
+  @Get("inbox")
+  async inbox(@Req() req: AuthenticatedRequest, @Query("unread") unread?: string) {
+    if (!req.auth) throw AppError.unauthenticated();
+    return this.notifications.inbox(req.auth.sub, { unreadOnly: unread === "true" });
+  }
+
+  /** The badge in the shell. Called on every page, so it counts and nothing else. */
+  @Get("unread-count")
+  async unreadCount(@Req() req: AuthenticatedRequest) {
+    if (!req.auth) throw AppError.unauthenticated();
+    return { count: await this.notifications.unreadCount(req.auth.sub) };
+  }
+
+  @Post("read")
+  @HttpCode(204)
+  async readAll(@Req() req: AuthenticatedRequest) {
+    if (!req.auth) throw AppError.unauthenticated();
+    await this.notifications.markRead(req.auth.sub);
+  }
+
+  @Post(":notificationId/read")
+  @HttpCode(204)
+  async readOne(
+    @Req() req: AuthenticatedRequest,
+    @Param("notificationId") notificationId: string,
+  ) {
+    if (!req.auth) throw AppError.unauthenticated();
+    await this.notifications.markRead(req.auth.sub, notificationId);
+  }
 
   /** What can be switched, with the words the screen should use. */
   @Get("catalog")

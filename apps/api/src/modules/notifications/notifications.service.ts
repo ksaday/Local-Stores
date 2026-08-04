@@ -7,6 +7,18 @@ import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { EVENT_CATALOG, type Channel, type NotificationEvent } from "./catalog.js";
 import { renderOrderMessage } from "./templates.js";
 
+export interface InboxItem {
+  id: string;
+  store_id: string | null;
+  store_name: string | null;
+  event: string;
+  title: string;
+  body: string;
+  link: string | null;
+  read_at: Date | null;
+  created_at: Date;
+}
+
 export interface Preference {
   event: string;
   channel: Channel;
@@ -15,13 +27,14 @@ export interface Preference {
 }
 
 /**
- * One place that decides whether somebody hears about something (plan §5.9).
+ * One place that decides whether somebody hears about something, and puts it
+ * where they will see it: the app (ADR 0001).
  *
- * The senders that came before this — dunning, the low-stock digest — each
- * worked out their own recipients and wrote their own words, which was fine
- * while there were two of them. Order notifications would have made it four,
- * and four places that each decide who to email is how somebody ends up
- * unsubscribed from one thing and not another.
+ * A notification is written into somebody's inbox, not sent anywhere. There is
+ * no delivery state, no retry and no queue, because nothing leaves the
+ * building — which is most of the reason for the decision. Email survives only
+ * where in-app cannot reach: account access, and billing warnings aimed at an
+ * owner who is not signing in.
  */
 @Injectable()
 export class NotificationsService {
@@ -67,12 +80,14 @@ export class NotificationsService {
       `,
     );
 
-    if (!order?.contact_email) {
-      // A counter sale has nobody to write to, and that is not a failure.
-      return false;
-    }
+    if (!order) return false;
 
-    if (!(await this.wants(order.customer_id, storeId, event, "EMAIL"))) return false;
+    // A guest checkout has no account, so there is no inbox to write to. They
+    // follow their order by its receipt link instead, which is what the claim
+    // token in that link is for.
+    if (!order.customer_id) return false;
+
+    if (!(await this.wants(order.customer_id, storeId, event, "IN_APP"))) return false;
 
     const message = renderOrderMessage(event, {
       storeName: order.store_name,
@@ -85,9 +100,81 @@ export class NotificationsService {
     });
     if (!message) return false;
 
-    await this.mailer.send({ to: order.contact_email, ...message });
-    this.logger.log(`Sent ${event} for order ${order.order_number}`);
+    await this.deliver({
+      userId: order.customer_id,
+      storeId,
+      event,
+      title: message.subject,
+      body: message.body,
+      link: `/orders/${orderId}`,
+    });
     return true;
+  }
+
+  /**
+   * Puts one notification in somebody's inbox.
+   *
+   * Written as the platform, because the sender is almost never the recipient:
+   * a clerk marking an order ready is telling a customer, and a sweep telling
+   * a shop owner has no session at all.
+   */
+  async deliver(input: {
+    userId: string;
+    storeId: string | null;
+    event: NotificationEvent;
+    title: string;
+    body: string;
+    link?: string;
+  }): Promise<void> {
+    await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
+      tx.$executeRaw`
+        INSERT INTO notifications (id, user_id, store_id, event, title, body, link, created_at)
+        VALUES (${randomUUID()}, ${input.userId}, ${input.storeId}, ${input.event},
+                ${input.title}, ${input.body}, ${input.link ?? null}, now())
+      `,
+    );
+    this.logger.log(`Notified ${input.userId}: ${input.event}`);
+  }
+
+  /** Somebody's inbox, newest first. */
+  async inbox(userId: string, opts: { unreadOnly?: boolean; limit?: number } = {}) {
+    return this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<InboxItem[]>`
+        SELECT n.id, n.store_id, s.name AS store_name, n.event, n.title, n.body,
+               n.link, n.read_at, n.created_at
+        FROM notifications n
+        LEFT JOIN stores s ON s.id = n.store_id
+        WHERE n.user_id = ${userId}
+          AND (${opts.unreadOnly ?? false}::boolean = false OR n.read_at IS NULL)
+        ORDER BY n.created_at DESC
+        LIMIT ${Math.min(opts.limit ?? 50, 200)}
+      `,
+    );
+  }
+
+  /** What the badge in the shell shows. */
+  async unreadCount(userId: string): Promise<number> {
+    const [row] = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<{ count: bigint }[]>`
+        SELECT count(*) FROM notifications WHERE user_id = ${userId} AND read_at IS NULL`,
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  /**
+   * Marks one, or everything, as read.
+   *
+   * Only ever the caller's own — the RLS update policy says so as well, so a
+   * mistake here cannot mark somebody else's inbox read.
+   */
+  async markRead(userId: string, notificationId?: string): Promise<number> {
+    return this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.$executeRaw`
+        UPDATE notifications SET read_at = now()
+        WHERE user_id = ${userId} AND read_at IS NULL
+          AND (${notificationId ?? null}::text IS NULL OR id = ${notificationId ?? null})
+      `,
+    );
   }
 
   /**

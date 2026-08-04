@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { randomUUID } from "node:crypto";
 import type { Env } from "../../config/env.js";
 import { Mailer } from "../../infra/mailer/mailer.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { GRACE_PERIOD_DAYS } from "./billing.service.js";
@@ -27,6 +28,7 @@ const SCHEDULE: { stage: DunningStage; afterDays: number }[] = [
 
 interface Candidate {
   store_id: string;
+  owner_user_id: string;
   store_name: string;
   owner_email: string;
   /**
@@ -48,10 +50,11 @@ interface Candidate {
  * Tells a store owner their subscription is unpaid, before their shop goes
  * offline (plan §18.5a).
  *
- * The in-app banner warns whoever signs in. The owner who needs warning is the
- * one who does not: nothing looks broken during the grace period, because the
- * shop keeps trading, so there is no reason to go and look. Mail is the only
- * channel that reaches someone who isn't already there.
+ * Written to the owner's inbox like everything else (ADR 0001), *and* emailed —
+ * the one place that rule bends. The owner who needs warning is the one who is
+ * not signing in: nothing looks broken during the grace period, because the
+ * shop keeps trading, so an in-app notice alone reaches only somebody who was
+ * going to look anyway.
  *
  * Kept apart from `BillingService` on purpose. That service decides what is
  * true about a subscription — Stripe's word, the grace period, the suspension.
@@ -65,6 +68,7 @@ export class DunningService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailer: Mailer,
+    private readonly notifications: NotificationsService,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -102,7 +106,7 @@ export class DunningService {
     // store-scoped read here returns a store with no one to write to.
     return this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
       tx.$queryRaw<Candidate[]>`
-        SELECT s.store_id, st.name AS store_name, u.email AS owner_email,
+        SELECT s.store_id, st.name AS store_name, u.id AS owner_user_id, u.email AS owner_email,
                s.past_due_since, s.suspended_at,
                COALESCE(
                  array_agg(n.stage::text) FILTER (WHERE n.stage IS NOT NULL),
@@ -114,7 +118,7 @@ export class DunningService {
         LEFT JOIN billing_notifications n
           ON n.store_id = s.store_id AND n.past_due_since = s.past_due_since
         WHERE s.status = 'PAST_DUE' AND s.past_due_since IS NOT NULL
-        GROUP BY s.store_id, st.name, u.email, s.past_due_since, s.suspended_at
+        GROUP BY s.store_id, st.name, u.id, u.email, s.past_due_since, s.suspended_at
         LIMIT 200
       `,
     );
@@ -147,14 +151,26 @@ export class DunningService {
       ),
     );
 
-    await this.mailer.send({
-      to: candidate.owner_email,
-      subject: subjectFor(stage, candidate.store_name, daysLeft),
-      body: bodyFor(stage, candidate.store_name, daysLeft, this.billingUrl(candidate.store_id)),
-      // A warning nobody receives is the failure this whole job exists to
-      // prevent, so a bounce here is worth waking someone for.
-      critical: true,
+    const title = subjectFor(stage, candidate.store_name, daysLeft);
+    const body = bodyFor(stage, candidate.store_name, daysLeft, this.billingUrl(candidate.store_id));
+
+    // In the app, like everything else (ADR 0001)…
+    await this.notifications.deliver({
+      userId: candidate.owner_user_id,
+      storeId: candidate.store_id,
+      event: "subscription.payment_failed",
+      title,
+      body,
+      link: `/store/${candidate.store_id}/ops/settings`,
     });
+
+    // …and by email as well, which is the one place that rule bends. The whole
+    // purpose of dunning is reaching an owner who is *not* signing in: nothing
+    // looks broken while the shop keeps trading through its grace period, so an
+    // in-app notice alone is read only by somebody who was going to look
+    // anyway. A warning nobody receives is the failure this job exists to
+    // prevent.
+    await this.mailer.send({ to: candidate.owner_email, subject: title, body, critical: true });
 
     // Recorded after sending, not before: if the write fails, the worst case
     // is a duplicate warning next hour, and if it were the other way round the
