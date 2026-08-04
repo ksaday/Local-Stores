@@ -71,6 +71,7 @@ afterAll(async () => {
 
 async function teardown(): Promise<void> {
   const stores = [STORE_A, STORE_B];
+  await admin.$executeRaw`DELETE FROM deliveries WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
@@ -186,6 +187,32 @@ describe("cross-tenant isolation (RLS)", () => {
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
       (tx) => tx.order.findMany({ where: { id: orderId } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's deliveries from another store", async () => {
+    // A delivery row points at a customer's home address and phone number.
+    // This is the PII-shaped leak, not merely a commercial one.
+    const orderId = crypto.randomUUID();
+    await admin.$executeRaw`
+      INSERT INTO orders (id,store_id,order_number,fulfillment,status,delivery_address,
+                          subtotal_cents,total_cents,currency,placed_at,created_at,updated_at)
+      VALUES (${orderId},${STORE_B},'ISO-DL','DELIVERY','READY',
+              '{"line1":"9 Somewhere St"}'::jsonb,100,100,'USD',now(),now(),now())`;
+    await admin.$executeRaw`
+      INSERT INTO deliveries (id,store_id,order_id,created_at,updated_at)
+      VALUES (${crypto.randomUUID()},${STORE_B},${orderId},now(),now())`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.delivery.findMany({ where: { orderId } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.delivery.findMany({ where: { orderId } }),
     );
 
     expect(fromStoreA).toHaveLength(0);

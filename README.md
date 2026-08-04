@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 496 tests passing. A shop can list products, take an order online or over
+in.** 510 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -106,6 +106,18 @@ post the same difference twice. The screen is a
 workspace you can leave and come back to: pick a shelf, type what is on it, and
 the quantity box keeps focus, because this is used standing up with a phone in
 one hand.
+
+**Deliveries** — a dispatch board of everything still to go out, per-driver
+rounds, pick-up, hand-over with proof, and failures with a reason and an
+attempt count. Deliberately *not* a second state machine: the order's own
+status stays the single answer to "where is this", and every move goes through
+`OrdersService`, so the transitions and their role gates are enforced in one
+place. A failed attempt returns the order to READY — it is prepared, it is back
+in the shop, and somebody will take it out again — while the reason and the
+count stay on the delivery, so a third failure reads as a pattern rather than
+three unrelated events. A driver may only move their own parcels; a store admin
+can close out a round somebody left open. Proof photos and signatures go to the
+private media prefix, never the public one.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order

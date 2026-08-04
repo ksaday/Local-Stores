@@ -712,6 +712,7 @@ model Order {
   @@index([storeId, status, placedAt])
   @@index([customerId, placedAt])
   @@map("orders")
+  delivery Delivery?
 }
 
 enum OrderChannel {
@@ -954,6 +955,49 @@ model StoreSubscription {
   plan  Plan  @relation(fields: [planCode], references: [code])
 
   @@map("store_subscriptions")
+}
+
+/// What is known about getting one order to somebody's door. The order's own
+/// status remains the answer to "where is it" — this carries the rest.
+model Delivery {
+  id        String @id @default(uuid())
+  storeId   String @map("store_id")
+  orderId   String @unique @map("order_id")
+
+  driverUserId String?   @map("driver_user_id")
+  assignedAt   DateTime? @map("assigned_at")
+  assignedBy   String?   @map("assigned_by")
+  pickedUpAt   DateTime? @map("picked_up_at")
+  deliveredAt  DateTime? @map("delivered_at")
+
+  /// Private-prefix media: a photograph of somebody's doorway, and their
+  /// handwriting. Served by short-lived presigned URL, never publicly.
+  proofMediaAssetId     String? @map("proof_media_asset_id")
+  signatureMediaAssetId String? @map("signature_media_asset_id")
+
+  failureReason DeliveryFailureReason? @map("failure_reason")
+  failureNote   String?                @map("failure_note")
+  failedAt      DateTime?              @map("failed_at")
+  /// A second attempt is ordinary; a fourth is a conversation with the customer.
+  attempts      Int                    @default(0)
+
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([driverUserId, deliveredAt], map: "deliveries_driver")
+  @@map("deliveries")
+}
+
+enum DeliveryFailureReason {
+  NOBODY_HOME
+  ADDRESS_NOT_FOUND
+  REFUSED
+  UNSAFE_TO_LEAVE
+  VEHICLE_PROBLEM
+  OTHER
 }
 
 /// One physical count of a shop: open, entered, then posted as variances.
