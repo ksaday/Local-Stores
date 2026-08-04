@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { testNotifications } from "../../modules/notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { OrdersService } from "../orders/orders.service.js";
@@ -21,7 +22,7 @@ let delivery: DeliveryService;
 beforeEach(async () => {
   prisma = prisma ?? new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   const audit = new AuditService(prisma);
-  const orders = new OrdersService(prisma, audit, new OutboxService(prisma));
+  const orders = new OrdersService(prisma, audit, new OutboxService(prisma), testNotifications(prisma).notifications);
   delivery = new DeliveryService(prisma, orders, audit);
   await reset();
 });

@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7 and 8 complete; the worker, the outbox and billing are
-in.** 510 tests passing. A shop can list products, take an order online or over
+in.** 520 tests passing. A shop can list products, take an order online or over
 the counter, work the queue, take cash or card, refund, print a receipt, run a
 promotion, and be billed for the platform itself.
 
@@ -126,6 +126,23 @@ a phone at the kerb: full-width buttons, the address as one line, the customer's
 number as a `tel:` link and the address as a maps link, and the previous failure
 shown before setting off. Reporting a failure is one tap from the card rather
 than a menu, because a driver doing it is standing in the rain.
+
+**Notifications** — a catalogue of what the platform will tell somebody about
+(§5.9), one service that decides whether they hear it, and store-branded
+templates. Customers now get email when an order is confirmed, ready, on its
+way, delivered or cancelled — until this, placing an order and hearing nothing
+was the actual behaviour. Messages name the shop rather than the platform: four
+local shops should look like four shops in an inbox.
+
+Preferences are per person, and per shop if somebody wants that — a customer of
+four stores who only wants to hear from their bakery sets one row. Absence of a
+row means the default, which is on, because storing every default would mean
+writing one per user per event at signup and migrating all of them whenever the
+catalogue changed. Transactional messages are not in the preference model at
+all and refuse to be switched off: a cancellation leaves somebody waiting for
+something that is never coming, and a failed subscription payment takes a
+storefront offline a week later. A switch that does nothing is worse than no
+switch, so asking for one is an error rather than a silent no-op.
 
 **Order queue** — the staff screen. Orders grouped by what the shop has to do
 next rather than by time, one-tap status actions sized for a tablet, the order

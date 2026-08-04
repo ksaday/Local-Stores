@@ -11,6 +11,8 @@ import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { OutboxService } from "../../infra/outbox/outbox.service.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
+import type { NotificationEvent } from "../notifications/catalog.js";
 
 export interface OrderListFilters {
   status?: OrderStatus;
@@ -28,7 +30,21 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  /**
+   * Which status changes the customer hears about (plan §5.9).
+   *
+   * Not every one: PREPARING and CONFIRMED are the shop's business, and a
+   * customer emailed at every internal step stops reading any of them.
+   */
+  private static readonly CUSTOMER_TOLD_ABOUT: Partial<Record<OrderStatus, NotificationEvent>> = {
+    READY: "order.ready",
+    OUT_FOR_DELIVERY: "order.out_for_delivery",
+    DELIVERED: "order.delivered",
+    CANCELLED: "order.cancelled",
+  };
 
   /** The store's order queue. */
   async listForStore(storeId: string, filters: OrderListFilters = {}) {
@@ -211,6 +227,24 @@ export class OrdersService {
         return { id: orderId, status: to, unchanged: false, orderNumber: current.orderNumber };
       },
     );
+
+    // After the transaction, and deliberately not inside it: the customer's
+    // email is not worth rolling a status change back for, and a mail provider
+    // has no business holding a database transaction open. It is queued
+    // anyway, so this is a Redis write rather than an SMTP conversation.
+    if (!result.unchanged) {
+      const event = OrdersService.CUSTOMER_TOLD_ABOUT[to];
+      if (event) {
+        await this.notifications
+          .notifyOrder(event, storeId, orderId)
+          .catch((err: unknown) =>
+            // A failure here must not undo a status the shop has already acted
+            // on — the parcel is out for delivery whether or not the email got
+            // queued.
+            this.logger.error(`Could not notify for ${orderId}: ${String(err)}`),
+          );
+      }
+    }
 
     return result;
   }

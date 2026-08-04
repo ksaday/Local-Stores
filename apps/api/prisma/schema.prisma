@@ -90,6 +90,7 @@ model User {
   carts              Cart[]
   orders             Order[]
   storeRelations     CustomerStoreRelation[]
+  notificationPreferences NotificationPreference[]
 
   @@map("users")
 }
@@ -955,6 +956,32 @@ model StoreSubscription {
   plan  Plan  @relation(fields: [planCode], references: [code])
 
   @@map("store_subscriptions")
+}
+
+/// Somebody's choice about one kind of message on one channel. Absence means
+/// the default, which is on — see the migration for why defaults are not rows.
+model NotificationPreference {
+  id        String              @id @default(uuid())
+  userId    String              @map("user_id")
+  /// Null means everywhere; a store id narrows the choice to one shop.
+  storeId   String?             @map("store_id")
+  event     String
+  channel   NotificationChannel
+  enabled   Boolean
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, event], map: "notification_preferences_lookup")
+  @@map("notification_preferences")
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+  PUSH
+  SMS
 }
 
 /// What is known about getting one order to somebody's door. The order's own

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { testNotifications } from "../notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { FakePaymentProvider } from "../../infra/payments/payment.provider.fake.js";
 import { AuditService } from "../audit/audit.service.js";
@@ -48,7 +49,7 @@ beforeEach(async () => {
   const outbox = new OutboxService(prisma);
   payments = new PaymentsService(prisma, provider, audit);
   billing = new BillingService(prisma, provider, audit);
-  orders = new OrdersService(prisma, audit, outbox);
+  orders = new OrdersService(prisma, audit, outbox, testNotifications(prisma).notifications);
   webhooks = new StripeWebhooksService(prisma, provider, orders, billing);
   cart = new CartService(prisma);
   checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox, new CouponsService(prisma, new AuditService(prisma)));

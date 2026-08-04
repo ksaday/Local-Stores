@@ -6,6 +6,7 @@ import { PrismaModule } from "./infra/prisma/prisma.module.js";
 import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { OutboxModule } from "./infra/outbox/outbox.module.js";
 import { DeliveryModule } from "./modules/delivery/delivery.module.js";
+import { NotificationsModule } from "./modules/notifications/notifications.module.js";
 import { InventoryModule } from "./modules/inventory/inventory.module.js";
 import { MediaHttpModule } from "./modules/media/media-http.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
@@ -42,6 +43,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     MediaHttpModule,
     InventoryModule,
     DeliveryModule,
+    NotificationsModule,
     AuditModule,
     AuthModule,
     StoresModule,

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { testNotifications } from "../../modules/notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
 import { CartService, type Shopper } from "../cart/cart.service.js";
@@ -29,7 +30,7 @@ beforeAll(() => {
   cart = new CartService(prisma);
   outbox = new OutboxService(prisma);
   checkout = new CheckoutService(prisma, new ConfiguredRateTaxProvider(async () => null), outbox, new CouponsService(prisma, new AuditService(prisma)));
-  orders = new OrdersService(prisma, new AuditService(prisma), outbox);
+  orders = new OrdersService(prisma, new AuditService(prisma), outbox, testNotifications(prisma).notifications);
 });
 
 afterAll(async () => {
