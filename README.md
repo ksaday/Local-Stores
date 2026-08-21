@@ -629,6 +629,18 @@ There is no rule-exclusion list, deliberately. An exclusion list is where a gate
 goes to die, because the cheapest answer to a red build is always one more line
 in it.
 
+It also walks the page with the keyboard, which axe does not: every control is
+focused in turn and checked for an indicator that is actually drawn. Not a
+comparison of `box-shadow` strings — `ring-0` still emits one, and it is
+invisible.
+
+That check carries a canary, because it was very hard to make it fail on
+purpose. Strip the author's focus ring and the browser quietly substitutes its
+own, so an app with its focus styling deleted still looks like it passes. So
+every run first strips focus styling on one page and confirms the probe
+notices; a probe that reports nothing there is reported as broken, rather than
+as a clean bill of health.
+
 ## Services: Docker or Homebrew
 
 `docker-compose.yml` provides Postgres and Redis, and is the shortest path from a

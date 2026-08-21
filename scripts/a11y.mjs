@@ -58,6 +58,9 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 /** Time given to hydration after load before axe looks at the DOM. */
 const SETTLE_MS = 1200;
 
+/** Bounds the keyboard walk on a long page — a catalog can run to hundreds. */
+const MAX_TAB_STOPS = 60;
+
 async function main() {
   const browser = await chromium.launch();
   const results = [];
@@ -99,7 +102,17 @@ async function main() {
         [TAGS],
       );
 
-      results.push({ path, label, violations: run.violations });
+      // The skip link is layout-wide, so it is proved once rather than on all
+      // eighteen pages. The storefront is a fair sample: public, and the first
+      // page most people meet.
+      const first = results.length === 0;
+      const skip = first ? await skipLinkAudit(page) : null;
+      const keyboard = await keyboardAudit(page);
+      // Once per run, on the first page, and last — it strips the page's
+      // styling to do its work, so nothing else may read the page afterwards.
+      const selfTest = first ? await probeSelfTest(page) : null;
+
+      results.push({ path, label, violations: run.violations, keyboard, skip, selfTest });
       await context.close();
     }
   } finally {
@@ -107,6 +120,156 @@ async function main() {
   }
 
   report(results);
+}
+
+/**
+ * The half of NFR-A11Y-02 that axe cannot see: can somebody drive this page
+ * with a keyboard, and can they tell where they are while doing it.
+ *
+ * axe checks that a control has a name and a role. It does not check that the
+ * control is reachable by Tab, or that anything on screen changes when it is —
+ * and a focus ring that has been styled away leaves a keyboard user typing
+ * blind into a page that looks inert.
+ *
+ * A real Tab press first, because `:focus-visible` keys off how the focus
+ * arrived: focus moved by script does not necessarily match it, so a probe
+ * that only called `.focus()` would report every element as unstyled and be
+ * ignored within a day.
+ */
+async function keyboardAudit(page) {
+  await page.keyboard.press("Tab");
+
+  return page.evaluate((max) => {
+    const issues = [];
+    const selector =
+      'a[href], button, input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])';
+
+    const visible = [...document.querySelectorAll(selector)].filter((el) => {
+      if (el.disabled) return false;
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      // Off-screen by design — the skip link lives here until it is focused,
+      // and checking its resting position would fail it for working correctly.
+      const box = el.getBoundingClientRect();
+      return box.width > 0 || box.height > 0 || el.className.includes("sr-only");
+    });
+
+    /**
+     * Whether a ring is actually drawn, rather than merely declared.
+     *
+     * Not a string comparison of box-shadow: `ring-0` still emits a shadow —
+     * `rgba(0,0,0,0) 0px 0px 0px 0px` — which differs from `none` as text while
+     * being invisible on screen. A probe that compared strings would pass a
+     * focus style somebody had set to zero width, which is the regression it
+     * most needs to catch.
+     */
+    const paints = (value) =>
+      value !== "none" && /(?:^|\s)(?!0px)(\d*\.?\d+)px/.test(value) && !/^rgba\(0, 0, 0, 0\)/.test(value);
+
+    const measure = (el) => {
+      const s = getComputedStyle(el);
+      return {
+        outline: s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0,
+        shadow: paints(s.boxShadow),
+        // A control may signal focus by changing colour instead of adding a
+        // ring, which is just as visible and equally acceptable.
+        paint: `${s.backgroundColor}|${s.borderColor}|${s.color}`,
+      };
+    };
+
+    for (const el of visible.slice(0, max)) {
+      // Blur first. The Tab press that put the browser into keyboard mode also
+      // left focus on the first control, so measuring its "resting" style
+      // without this reads it while it is already lit — and then reports the
+      // one element with a working focus style as the one without.
+      el.blur();
+      const resting = measure(el);
+      el.focus();
+
+      if (document.activeElement !== el) {
+        issues.push({ kind: "not focusable", html: el.outerHTML.slice(0, 120) });
+        continue;
+      }
+
+      const focused = measure(el);
+      const visibleChange =
+        (focused.outline && !resting.outline) ||
+        (focused.shadow && !resting.shadow) ||
+        focused.paint !== resting.paint;
+
+      if (!visibleChange) {
+        issues.push({ kind: "no visible focus", html: el.outerHTML.slice(0, 120) });
+      }
+      el.blur();
+    }
+
+    return { checked: Math.min(visible.length, max), issues };
+  }, MAX_TAB_STOPS);
+}
+
+/**
+ * Proves the focus probe can still fail, before its clean result is believed.
+ *
+ * Every attempt to verify this by hand — setting the ring to zero width,
+ * overriding the rule in the stylesheet — produced a *pass*, because the
+ * browser quietly substitutes its own focus ring the moment the author's one
+ * stops applying. A check that cannot be made to fail is not a check, and this
+ * one had to be pointed at a page with the indicator genuinely gone to know
+ * the difference.
+ *
+ * So the gate carries its own canary: focus styling is stripped for real, the
+ * probe is run, and finding nothing is itself the failure.
+ */
+async function probeSelfTest(page) {
+  // Only the indicator is removed. An earlier version also reverted the
+  // colours, which applies *on focus* and so invented the very change it was
+  // supposed to be taking away — the canary passed itself.
+  await page.addStyleTag({
+    content: `*:focus, *:focus-visible {
+      outline: none !important;
+      box-shadow: none !important;
+    }`,
+  });
+
+  const { issues, checked } = await keyboardAudit(page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+
+  if (checked > 0 && issues.length === 0) {
+    return [
+      "the focus probe reported nothing on a page with focus styling stripped — " +
+        "it cannot detect a missing focus ring, so its clean results mean nothing",
+    ];
+  }
+  return [];
+}
+
+/**
+ * The skip link is the first thing a keyboard user meets (NFR-A11Y-02), so it
+ * is checked where it lives — in the shared layout — rather than once per page.
+ */
+async function skipLinkAudit(page) {
+  await page.keyboard.press("Tab");
+  const first = await page.evaluate(() => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return null;
+    const box = el.getBoundingClientRect();
+    return {
+      href: el.getAttribute("href"),
+      text: (el.textContent || "").trim(),
+      // It has to become visible on focus; one that stays off-screen is a link
+      // only a screen reader knows about.
+      onScreen: box.top >= 0 && box.left >= 0 && box.width > 0 && box.height > 0,
+    };
+  });
+
+  if (!first) return ["skip-to-content — nothing is focusable, the first Tab went nowhere"];
+  if (!first.href?.startsWith("#")) {
+    return [`skip-to-content — the first tab stop is "${first.text}", not a skip link`];
+  }
+  if (!first.onScreen) return ["skip-to-content — the link stays off-screen when focused"];
+
+  const target = await page.evaluate((h) => Boolean(document.querySelector(h)), first.href);
+  return target ? [] : [`skip-to-content — points at ${first.href}, which is not on the page`];
 }
 
 /**
@@ -224,13 +387,22 @@ function report(results) {
       console.log(`✗ ${r.label} (${r.path}) — could not audit: ${r.error}`);
       continue;
     }
-    if (r.violations.length === 0) {
-      console.log(`✓ ${r.label} (${r.path})`);
+    const kb = r.keyboard?.issues ?? [];
+    const skip = [...(r.skip ?? []), ...(r.selfTest ?? [])];
+
+    if (r.violations.length === 0 && kb.length === 0 && skip.length === 0) {
+      console.log(`✓ ${r.label} (${r.path})  ·  ${r.keyboard?.checked ?? 0} tab stops`);
       continue;
     }
 
-    failures += r.violations.length;
+    failures += r.violations.length + kb.length + skip.length;
     console.log(`✗ ${r.label} (${r.path})`);
+
+    for (const problem of skip) console.log(`    ${problem}`);
+    for (const issue of kb) {
+      console.log(`    keyboard — ${issue.kind}`);
+      console.log(`      ${issue.html.replace(/\s+/g, " ")}`);
+    }
     for (const v of r.violations) {
       console.log(`    ${v.id} [${v.impact}] — ${v.help}`);
       console.log(`    ${v.helpUrl}`);
