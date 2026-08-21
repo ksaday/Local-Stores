@@ -154,7 +154,7 @@ function OrderCard({
         <div className="min-w-0">
           <Link
             href={`/store/${storeId}/ops/orders/${order.id}`}
-            className="text-base font-semibold text-ink hover:underline"
+            className="tap-target text-base font-semibold text-ink hover:underline"
           >
             {order.orderNumber}
           </Link>

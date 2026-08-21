@@ -51,7 +51,7 @@ export function InboxList({ items }: { items: InboxItem[] }) {
             type="button"
             disabled={pending}
             onClick={() => act(markAllRead)}
-            className="text-sm text-ink-muted underline underline-offset-4 disabled:opacity-60"
+            className="tap-target text-sm text-ink-muted underline underline-offset-4 disabled:opacity-60"
           >
             Mark all as read
           </button>
@@ -86,7 +86,7 @@ export function InboxList({ items }: { items: InboxItem[] }) {
                   <span>{when(item.created_at)}</span>
                   {item.store_name && <span>{item.store_name}</span>}
                   {item.link && (
-                    <Link href={item.link} className="text-brand underline underline-offset-4">
+                    <Link href={item.link} className="tap-target text-brand underline underline-offset-4">
                       Open
                     </Link>
                   )}
@@ -95,7 +95,7 @@ export function InboxList({ items }: { items: InboxItem[] }) {
                       type="button"
                       disabled={pending}
                       onClick={() => act(() => markRead(item.id))}
-                      className="underline underline-offset-4 disabled:opacity-60"
+                      className="tap-target underline underline-offset-4 disabled:opacity-60"
                     >
                       Mark as read
                     </button>

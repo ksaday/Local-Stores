@@ -50,7 +50,7 @@ export default async function HomePage() {
         <p className="mt-2 text-sm text-ink-muted">
           $49 a month, with a 30-day free trial. We never take a cut of your sales.
         </p>
-        <Link href="/apply" className="mt-4 inline-block text-sm font-medium text-brand underline underline-offset-4">
+        <Link href="/apply" className="tap-target mt-4 text-sm font-medium text-brand underline underline-offset-4">
           Apply to open your store
         </Link>
       </section>

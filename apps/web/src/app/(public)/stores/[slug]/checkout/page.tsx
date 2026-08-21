@@ -43,7 +43,7 @@ export default async function CheckoutPage({ params }: { params: Promise<{ slug:
   return (
     <main id="main" className="mx-auto max-w-4xl px-6 py-10">
       <nav aria-label="Breadcrumb" className="text-sm text-ink-muted">
-        <Link href={`/stores/${slug}/cart`} className="hover:text-ink">
+        <Link href={`/stores/${slug}/cart`} className="tap-target hover:text-ink">
           Cart
         </Link>
         <span aria-hidden className="mx-2">/</span>

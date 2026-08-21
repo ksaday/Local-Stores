@@ -125,10 +125,10 @@ export function SignInForm({
         {pending ? "Signing in…" : "Sign in"}
       </Button>
       <div className="flex justify-between text-sm">
-        <a href="/forgot-password" className="text-ink-muted underline underline-offset-4">
+        <a href="/forgot-password" className="tap-target text-ink-muted underline underline-offset-4">
           Forgot password?
         </a>
-        <a href="/signup" className="text-ink-muted underline underline-offset-4">
+        <a href="/signup" className="tap-target text-ink-muted underline underline-offset-4">
           Create an account
         </a>
       </div>

@@ -30,7 +30,7 @@ export function ForgotPasswordForm() {
             If that address has an account, a reset link is on its way. It expires in an hour.
           </p>
         </div>
-        <a href="/signin" className="block text-sm text-ink-muted underline underline-offset-4">
+        <a href="/signin" className="tap-target text-sm text-ink-muted underline underline-offset-4">
           Back to sign in
         </a>
       </div>
@@ -43,7 +43,7 @@ export function ForgotPasswordForm() {
       <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Sending…" : "Send reset link"}
       </Button>
-      <a href="/signin" className="block text-sm text-ink-muted underline underline-offset-4">
+      <a href="/signin" className="tap-target text-sm text-ink-muted underline underline-offset-4">
         Back to sign in
       </a>
     </form>

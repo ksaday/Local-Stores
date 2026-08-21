@@ -634,6 +634,15 @@ focused in turn and checked for an indicator that is actually drawn. Not a
 comparison of `box-shadow` strings — `ring-0` still emits one, and it is
 invisible.
 
+Every control is at least 24×24 CSS px in its own right (SC 2.5.8), rather than
+qualifying through the spacing exception that lets a smaller target pass when
+nothing else is within 24px of it. The exception is legitimate, but it makes
+conformance a property of the surrounding layout: tightening an unrelated gap is
+enough to break a control that never changed. Sizing the target removes the
+dependency. `.tap-target` in `globals.css` grows the box without moving the
+text, and is for standalone controls only — a link inside a sentence is exempt,
+and would be pulled out of the line of text by it.
+
 That check carries a canary, because it was very hard to make it fail on
 purpose. Strip the author's focus ring and the browser quietly substitutes its
 own, so an app with its focus styling deleted still looks like it passes. So

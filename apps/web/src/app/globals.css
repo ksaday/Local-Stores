@@ -28,4 +28,37 @@
   :focus-visible {
     @apply outline-none ring-2 ring-brand ring-offset-2 ring-offset-surface;
   }
+
+  /* Checkboxes and radios ship at 13×13 CSS px, which is half the 24px floor in
+     WCAG 2.2 SC 2.5.8 and genuinely hard to hit on a phone. Sized here rather
+     than per-input, because the ones that get missed are the ones somebody adds
+     later. */
+  input[type="checkbox"],
+  input[type="radio"] {
+    /* shrink-0 matters as much as the size: these usually sit in a flex row
+       next to their label, and as a flex item the box is free to shrink back
+       to its 13px intrinsic width — leaving it 24px tall and 13px wide, which
+       looks like the rule worked. */
+    @apply h-6 w-6 shrink-0;
+  }
+}
+
+@layer components {
+  /*
+   * A 24px minimum hit area for a control that is visually smaller — SC 2.5.8.
+   *
+   * These pass today only through the spacing exception: a 20px-tall link is
+   * allowed if nothing else is within 24px of it. That makes conformance a
+   * property of the surrounding layout rather than of the control, so tightening
+   * a gap somewhere unrelated is enough to break it. Sizing the target itself
+   * removes the dependency.
+   *
+   * inline-flex keeps the text where it was and grows the box around it, so
+   * nothing moves. It is therefore *only* for standalone controls — a link
+   * inside a sentence is exempt anyway, and this would break it out of the
+   * line of text.
+   */
+  .tap-target {
+    @apply inline-flex min-h-6 items-center;
+  }
 }

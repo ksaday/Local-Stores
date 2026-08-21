@@ -52,7 +52,7 @@ export function SignUpForm() {
             If we could create an account, we&rsquo;ve sent a link to confirm your address.
           </p>
         </div>
-        <a href="/signin" className="block text-sm text-ink-muted underline underline-offset-4">
+        <a href="/signin" className="tap-target text-sm text-ink-muted underline underline-offset-4">
           Back to sign in
         </a>
       </div>
@@ -76,7 +76,7 @@ export function SignUpForm() {
       <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Creating…" : "Create account"}
       </Button>
-      <a href="/signin" className="block text-sm text-ink-muted underline underline-offset-4">
+      <a href="/signin" className="tap-target text-sm text-ink-muted underline underline-offset-4">
         Already have an account? Sign in
       </a>
     </form>

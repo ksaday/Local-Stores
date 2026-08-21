@@ -32,7 +32,7 @@ export default async function NotificationsPage() {
               : `${unread} you haven${"’"}t read.`}
           </p>
         </div>
-        <Link href="/account" className="text-sm text-ink-muted underline underline-offset-4">
+        <Link href="/account" className="tap-target text-sm text-ink-muted underline underline-offset-4">
           Account
         </Link>
       </div>

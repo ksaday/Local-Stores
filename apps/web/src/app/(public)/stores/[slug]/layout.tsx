@@ -69,7 +69,7 @@ export default async function StoreLayout({
             />
           )}
           <div className="min-w-0">
-            <Link href={`/stores/${store.slug}`} className="text-lg font-semibold text-ink">
+            <Link href={`/stores/${store.slug}`} className="tap-target text-lg font-semibold text-ink">
               {store.name}
             </Link>
             <p className="text-sm text-ink-muted">
@@ -99,7 +99,7 @@ export default async function StoreLayout({
             {store.city && `, ${[store.city, store.state, store.postalCode].filter(Boolean).join(" ")}`}
           </p>
           <p className="mt-3">
-            <Link href="/stores" className="underline underline-offset-4">
+            <Link href="/stores" className="tap-target underline underline-offset-4">
               Browse other local stores
             </Link>
           </p>

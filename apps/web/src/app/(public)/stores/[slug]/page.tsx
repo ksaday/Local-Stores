@@ -114,7 +114,7 @@ export default async function StorefrontPage({
                 <Link
                   href={buildHref({ category: undefined, page: "1" })}
                   aria-current={!category ? "page" : undefined}
-                  className={category ? "text-ink-muted hover:text-ink" : "font-medium text-brand"}
+                  className={`tap-target ${category ? "text-ink-muted hover:text-ink" : "font-medium text-brand"}`}
                 >
                   All products
                 </Link>
@@ -124,9 +124,9 @@ export default async function StorefrontPage({
                   <Link
                     href={buildHref({ category: c.slug, page: "1" })}
                     aria-current={category === c.slug ? "page" : undefined}
-                    className={
+                    className={`tap-target ${
                       category === c.slug ? "font-medium text-brand" : "text-ink-muted hover:text-ink"
-                    }
+                    }`}
                   >
                     {c.name}
                   </Link>
@@ -137,11 +137,11 @@ export default async function StorefrontPage({
                           <Link
                             href={buildHref({ category: child.slug, page: "1" })}
                             aria-current={category === child.slug ? "page" : undefined}
-                            className={
+                            className={`tap-target ${
                               category === child.slug
                                 ? "font-medium text-brand"
                                 : "text-ink-muted hover:text-ink"
-                            }
+                            }`}
                           >
                             {child.name}
                           </Link>
@@ -166,11 +166,11 @@ export default async function StorefrontPage({
                   key={s.label}
                   href={buildHref({ sort: s.value || undefined, page: "1" })}
                   aria-current={(sort ?? "") === s.value ? "page" : undefined}
-                  className={
+                  className={`tap-target ${
                     (sort ?? "") === s.value
                       ? "font-medium text-brand"
                       : "text-ink-muted hover:text-ink"
-                  }
+                  }`}
                 >
                   {s.label}
                 </Link>

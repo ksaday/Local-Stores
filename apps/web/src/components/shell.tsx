@@ -105,7 +105,7 @@ export function AppShell({
                 every operational screen rather than behind Account. */}
             <Link
               href="/notifications"
-              className="flex items-center gap-1.5 text-sm text-ink-muted underline underline-offset-4"
+              className="tap-target gap-1.5 text-sm text-ink-muted underline underline-offset-4"
             >
               Notifications
               {unreadCount > 0 && (
@@ -117,7 +117,10 @@ export function AppShell({
                 </span>
               )}
             </Link>
-            <Link href="/account" className="text-sm text-ink-muted underline underline-offset-4">
+            <Link
+              href="/account"
+              className="tap-target text-sm text-ink-muted underline underline-offset-4"
+            >
               Account
             </Link>
           </div>

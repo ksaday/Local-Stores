@@ -73,7 +73,7 @@ export default async function ProductPage({
       <nav aria-label="Breadcrumb" className="text-sm text-ink-muted">
         <ol className="flex flex-wrap items-center gap-2">
           <li>
-            <Link href={`/stores/${slug}`} className="hover:text-ink">
+            <Link href={`/stores/${slug}`} className="tap-target hover:text-ink">
               {store.name}
             </Link>
           </li>
@@ -82,7 +82,7 @@ export default async function ProductPage({
               <span aria-hidden>/</span>
               <Link
                 href={`/stores/${slug}?category=${product.category.slug}`}
-                className="hover:text-ink"
+                className="tap-target hover:text-ink"
               >
                 {product.category.name}
               </Link>
