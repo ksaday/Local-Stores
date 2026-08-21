@@ -154,10 +154,10 @@ export class ReportsService {
    * a MATERIALIZED CTE makes it worse, because the CTE inherits the same
    * estimate.
    *
-   * That is worth knowing before the rest of the report set is written: every
-   * analytical query over `orders` meets the same wall, and the fix is either
-   * a rollup (which is how `sales()` sidesteps it entirely) or work on the
-   * policies themselves.
+   * The measurements, and the three fixes that did not work, are in
+   * docs/adr/0003. The short version: every analytical query over `orders`
+   * meets the same wall, and the way past it is a rollup — which is how
+   * `sales()` sidesteps it entirely.
    *
    * There is also deliberately no per-product order count. `count(DISTINCT
    * order_id)` measured at 1.1s of extra work on the year query to distinguish

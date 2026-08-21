@@ -133,6 +133,21 @@ asks, and the measurements changed the design twice — see
 migration `00000000000022`. Rolling up a three-day window went from 741ms to
 20ms at p95; reading three years at day grain is 7ms against a 2-second target.
 
+One thing that shaped the whole phase: **RLS breaks analytical query plans**
+([ADR 0003](docs/adr/0003-reports-read-rollups.md)). The policy on `orders` is
+an OR-chain over `current_setting(...)`, and Postgres cannot estimate its
+selectivity — a store-and-date-range scan that the table owner estimates at
+331,342 rows against 334,097 actual is planned at **one row** as `bba_app`. On
+that estimate the planner picks a nested loop and probes `order_items` a
+quarter of a million times, which is the entire difference between 650ms and
+2.4s on the same SQL over the same data.
+
+Three plausible fixes did not work — scalar-subquery InitPlans, removing the
+duplicate `FOR ALL` policy, a MATERIALIZED CTE — so reports read rollups, or
+declare a bounded window and say so. Best sellers is capped at a quarter for
+exactly this reason, and the cap is a measurement rather than a product
+opinion.
+
 **Notifications** — communications happen **inside the app**
 ([ADR 0001](docs/adr/0001-in-app-communications.md)): customers and staff learn
 what they need from their own dashboard, not from somebody else's mail server.
