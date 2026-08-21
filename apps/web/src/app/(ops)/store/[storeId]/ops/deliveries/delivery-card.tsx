@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { completeDelivery, failDelivery, pickUpDelivery } from "./actions";
 import { ProofCapture } from "./proof-capture";
+import { SignaturePad } from "./signature-pad";
 import { FAILURE_REASONS, formatAddress, type DeliveryRow } from "./types";
 
 /**
@@ -20,6 +21,7 @@ export function DeliveryCard({ storeId, row }: { storeId: string; row: DeliveryR
   const [reason, setReason] = useState<string>(FAILURE_REASONS[0].value);
   const [note, setNote] = useState("");
   const [proofAssetId, setProofAssetId] = useState<string | null>(null);
+  const [signatureAssetId, setSignatureAssetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -97,7 +99,15 @@ export function DeliveryCard({ storeId, row }: { storeId: string; row: DeliveryR
           {/* Above the button, not behind it: the photograph is taken at the
               door and the button is pressed walking away, which is the order
               they appear in here. */}
-          {!showFailure && <ProofCapture storeId={storeId} onCaptured={setProofAssetId} />}
+          {!showFailure && (
+            <>
+              <ProofCapture storeId={storeId} onCaptured={setProofAssetId} />
+              {/* Both are optional and neither blocks the button. A driver
+                  standing at a door with no answer and no signature still has
+                  to be able to say what happened. */}
+              <SignaturePad storeId={storeId} onCaptured={setSignatureAssetId} />
+            </>
+          )}
 
           <button
             type="button"
@@ -106,12 +116,13 @@ export function DeliveryCard({ storeId, row }: { storeId: string; row: DeliveryR
               act(() =>
                 completeDelivery(storeId, row.order_id, {
                   proofMediaAssetId: proofAssetId ?? undefined,
+                  signatureMediaAssetId: signatureAssetId ?? undefined,
                 }),
               )
             }
             className="w-full rounded-card bg-brand px-5 py-3 text-base font-medium text-brand-ink disabled:opacity-60"
           >
-            {pending ? "Saving…" : proofAssetId ? "Delivered — with photo" : "Delivered"}
+            {pending ? "Saving…" : completeLabel(proofAssetId, signatureAssetId)}
           </button>
 
           {!showFailure ? (
@@ -183,6 +194,20 @@ export function DeliveryCard({ storeId, row }: { storeId: string; row: DeliveryR
       )}
     </div>
   );
+}
+
+/**
+ * Names what is about to be filed alongside the delivery.
+ *
+ * The button says what it will record, so the driver can see at a glance that
+ * the signature they just watched somebody write did in fact save — without
+ * scrolling back up to check.
+ */
+function completeLabel(proof: string | null, signature: string | null): string {
+  if (proof && signature) return "Delivered — with photo and signature";
+  if (proof) return "Delivered — with photo";
+  if (signature) return "Delivered — with signature";
+  return "Delivered";
 }
 
 function labelFor(reason: string): string {

@@ -50,7 +50,7 @@ export async function pickUpDelivery(
 export async function completeDelivery(
   storeId: string,
   orderId: string,
-  input: { notes?: string; proofMediaAssetId?: string } = {},
+  input: { notes?: string; proofMediaAssetId?: string; signatureMediaAssetId?: string } = {},
 ): Promise<ActionResult<DeliveryRow>> {
   return run(() =>
     api<DeliveryRow>(`/stores/${storeId}/deliveries/${orderId}/complete`, {

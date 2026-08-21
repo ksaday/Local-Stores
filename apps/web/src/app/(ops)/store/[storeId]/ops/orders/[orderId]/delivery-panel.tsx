@@ -84,6 +84,25 @@ export function DeliveryPanel({ delivery }: { delivery: DeliveryRow }) {
       ) : (
         delivered_at && <p className="mt-4 text-sm text-ink-muted">No photo was taken.</p>
       )}
+
+      {delivery.signature_url ? (
+        <figure className="mt-4">
+          {/* eslint-disable-next-line @next/next/no-img-element -- same signed,
+              expiring URL as the photo above. */}
+          <img
+            src={delivery.signature_url}
+            alt="Signature the customer wrote when they took delivery"
+            // A white sheet on a white card needs its edge drawn, or it reads
+            // as a gap in the page rather than as the signature.
+            className="w-full rounded-card border border-line bg-white"
+          />
+          <figcaption className="mt-2 text-sm text-ink-muted">
+            Signed for on the doorstep.
+          </figcaption>
+        </figure>
+      ) : (
+        delivered_at && <p className="mt-2 text-sm text-ink-muted">Nobody signed for it.</p>
+      )}
     </Card>
   );
 }
