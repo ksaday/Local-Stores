@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
-accessibility work done; the worker, the outbox and billing are in.** 548 tests
+accessibility work done; the worker, the outbox and billing are in.** 562 tests
 passing. A shop can list products, take an order online or over the counter,
 work the queue, take cash or card, refund, print a receipt, run a promotion,
 send a parcel out with a driver, get a photograph and a signature back, be
@@ -115,9 +115,11 @@ one hand.
 week or month with a chart and its table twin, best sellers by units and
 revenue, and an overview that opens on today / 7 days / 30 days beside the open
 queue and whatever is running low. The overview is for noticing rather than
-working — every panel links to the screen where the work happens. Reports never aggregate `orders`: "how
-did we do last quarter" is otherwise a scan of every order the shop has ever
-taken, and it gets slower every day they stay open.
+working — every panel links to the screen where the work happens.
+
+Reports never aggregate `orders`. "How did we do last quarter" is otherwise a
+scan of every order the shop has ever taken, and it gets slower every day they
+stay open.
 
 A day is the *store's* day. A Chicago bakery closing at 11pm files those
 takings under that Tuesday; bucketing on UTC would move the last hour of trade
