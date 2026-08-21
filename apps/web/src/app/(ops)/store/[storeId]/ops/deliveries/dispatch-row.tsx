@@ -54,6 +54,11 @@ export function DispatchRow({
 
         <div className="flex items-center gap-2">
           <select
+            // Named for the row it belongs to, not just "Driver": a dispatcher
+            // running down this list with a screen reader hears one combo box
+            // per order, and "Driver for order 1043" is the only version of
+            // that which says which parcel is about to be reassigned.
+            aria-label={`Driver for order ${row.order_number}`}
             value={row.driver_user_id ?? ""}
             disabled={pending || drivers.length === 0}
             onChange={(e) =>

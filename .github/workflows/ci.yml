@@ -97,3 +97,54 @@ jobs:
         # Any store-A actor reaching store-B's rows means RLS has a hole, and
         # this is the check that says so (plan §12.12).
         run: npm run test:isolation --workspace @bba/api
+
+      # ── Accessibility gate (NFR-A11Y-04) ──────────────────────────────────
+      #
+      # Runs axe over the key pages in a real browser. It needs the whole stack
+      # up, because contrast and focus only exist once something has actually
+      # been laid out — which is also why this cannot be a unit test.
+
+      - name: Install Chromium for the accessibility gate
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Seed a store to audit
+        # The gate discovers its own URLs from whatever the seed made, so this
+        # is what gives it a storefront, a product and an ops dashboard to look
+        # at rather than a set of empty states.
+        run: npm run seed:dev --workspace @bba/api
+        env:
+          DATABASE_URL: postgresql://postgres@localhost:5432/bba_dev?schema=public
+
+      - name: Start the stack
+        # Keys are generated per run and thrown away with the runner: this
+        # instance exists for one audit and is never reachable from anywhere.
+        #
+        # COOKIE_SECURE=false because the gate signs in over plain http on
+        # localhost; with it on, the browser discards the session cookie and
+        # every ops page redirects to sign-in, which axe would happily audit
+        # and pass.
+        run: |
+          eval "$(npm run --silent keygen --workspace @bba/api | sed 's/^/export /')"
+          nohup npm run start --workspace @bba/api > /tmp/api.log 2>&1 &
+          nohup npm run start --workspace @bba/web > /tmp/web.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:3001/api/v1/health/ready > /dev/null \
+               && curl -sf http://localhost:3100/signin > /dev/null; then
+              echo "stack up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "stack did not come up"; tail -50 /tmp/api.log /tmp/web.log; exit 1
+        env:
+          COOKIE_SECURE: "false"
+          API_ORIGIN: http://localhost:3001
+
+      - name: Accessibility gate
+        run: npm run a11y
+
+      - name: Server logs
+        if: failure()
+        run: tail -80 /tmp/api.log /tmp/web.log

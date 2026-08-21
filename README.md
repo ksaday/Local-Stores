@@ -609,6 +609,26 @@ Run just the tenant-isolation gate (this must always pass — it's the release g
 cd apps/api && npm run test:isolation
 ```
 
+The accessibility gate (NFR-A11Y-04) runs axe over eighteen pages — public,
+auth, and every ops screen — against a **running** stack, so start the API and
+web app first, and run the dev seed so there is a real storefront to look at
+rather than a set of empty states:
+
+```bash
+npm run a11y
+```
+
+A real browser rather than jsdom, because half of WCAG AA is about what somebody
+actually sees: contrast, focus order, whether a control is visible at all. None
+of that exists without layout, so a jsdom sweep would pass while the storefront
+was unreadable. It discovers its own URLs from whatever the seed made — a list
+of hard-coded paths silently audits 404s once a slug changes — and it fails
+rather than skips when it cannot find a store to sign into, for the same reason.
+
+There is no rule-exclusion list, deliberately. An exclusion list is where a gate
+goes to die, because the cheapest answer to a red build is always one more line
+in it.
+
 ## Services: Docker or Homebrew
 
 `docker-compose.yml` provides Postgres and Redis, and is the shortest path from a
