@@ -634,6 +634,21 @@ focused in turn and checked for an indicator that is actually drawn. Not a
 comparison of `box-shadow` strings — `ring-0` still emits one, and it is
 invisible.
 
+**Language and dead ends** (§6.4). Customer and staff surfaces speak plain
+business English; identifiers belong on `/platform`. `/account` used to print a
+store's UUID in monospace where its name should have been, and called the role
+`store admin` while the team screen called the same thing `Owner` — so the
+labels now come from one map, and the list is a link to each role's own queue
+rather than a line of text nobody could act on.
+
+Every route has an error boundary, because none did. Any server exception —
+most easily reached by a driver opening Team, which their role does not include
+— rendered Next's own `Application error … Digest: 1999543842`: a technical
+identifier on a staff surface, and a page with no way off it. The replacements
+do not guess at the cause. React redacts server error messages in production
+and hands the client only a digest, so a boundary claiming "you don't have
+access" would be inventing a reason it cannot check.
+
 Every control is at least 24×24 CSS px in its own right (SC 2.5.8), rather than
 qualifying through the spacing exception that lets a smaller target pass when
 nothing else is within 24px of it. The exception is legitimate, but it makes

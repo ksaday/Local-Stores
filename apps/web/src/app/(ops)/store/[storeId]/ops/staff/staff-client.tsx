@@ -10,14 +10,21 @@ import {
 } from "../actions";
 import { Button, Field, FormError } from "@/components/ui";
 import { StatusBadge } from "@/components/shell";
-import type { StaffMember } from "@/lib/types";
+import { ROLE_LABELS, type StaffMember, type StoreRole } from "@/lib/types";
 
+// Labels come from the shared map so this screen and the account page cannot
+// drift into calling the same role two different things. Only the hints, which
+// are particular to choosing a role here, live locally.
 const ROLES = [
-  { value: "STORE_ADMIN", label: "Owner", hint: "Full access, including team and payments" },
-  { value: "INVENTORY_MANAGER", label: "Inventory", hint: "Products and stock" },
-  { value: "CLERK", label: "Cashier", hint: "Orders, the register, and customers" },
-  { value: "DELIVERY", label: "Delivery", hint: "Their own deliveries only" },
-] as const;
+  { value: "STORE_ADMIN", hint: "Full access, including team and payments" },
+  { value: "INVENTORY_MANAGER", hint: "Products and stock" },
+  { value: "CLERK", hint: "Orders, the register, and customers" },
+  { value: "DELIVERY", hint: "Their own deliveries only" },
+].map((r) => ({ ...r, label: ROLE_LABELS[r.value as StoreRole] })) as readonly {
+  value: StoreRole;
+  hint: string;
+  label: string;
+}[];
 
 export function StaffRow({
   storeId,
