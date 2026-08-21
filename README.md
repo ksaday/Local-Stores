@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
-accessibility work done; the worker, the outbox and billing are in.** 574 tests
+accessibility work done; the worker, the outbox and billing are in.** 577 tests
 passing. A shop can list products, take an order online or over the counter,
 work the queue, take cash or card, refund, print a receipt, run a promotion,
 send a parcel out with a driver, get a photograph and a signature back, be
@@ -118,7 +118,10 @@ workspace you can leave and come back to: pick a shelf, type what is on it, and
 the quantity box keeps focus, because this is used standing up with a phone in
 one hand.
 
-**Reporting** — three rollups and the screens that read them: takings by day,
+**Reporting** — three rollups and the screens that read them, plus a platform
+console showing subscription revenue beside what the shops sold — the second
+labelled as theirs rather than ours, because BBA takes no cut and a figure that
+size on a revenue dashboard invites the opposite reading. Store-side: takings by day,
 week or month with a chart and its table twin, best sellers by units and
 revenue, a customer list with lifetime spend, and an overview that opens on
 today / 7 days / 30 days beside the open queue and whatever is running low. The overview is for noticing rather than

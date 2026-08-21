@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import { PlatformReportsService } from "./platform-reports.service.js";
 import { ReportsService } from "./reports.service.js";
 import { SalesRollupService } from "./sales-rollup.service.js";
 
@@ -22,12 +23,14 @@ let prisma: PrismaService;
 let admin: PrismaService;
 let rollup: SalesRollupService;
 let reports: ReportsService;
+let platform: PlatformReportsService;
 
 beforeAll(async () => {
   prisma = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
   admin = new PrismaService();
   rollup = new SalesRollupService(prisma);
   reports = new ReportsService(prisma);
+  platform = new PlatformReportsService(prisma);
   await seed();
 });
 
@@ -38,6 +41,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await admin.$executeRaw`DELETE FROM store_subscriptions WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
@@ -65,6 +69,7 @@ async function seed(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  await admin.$executeRaw`DELETE FROM store_subscriptions WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
@@ -730,5 +735,56 @@ describe("the customer list", () => {
 
     const byRecent = await reports.customers(STORE, { sort: "recent" });
     expect(byRecent.rows[0]!.name).toBe("Recent Visitor");
+  });
+});
+
+describe("the platform console's figures", () => {
+  it("counts a shop's trade as GMV, and does not call it revenue", async () => {
+    // BBA takes no cut (§18.6), so this figure is the shops doing well rather
+    // than the platform earning. The test exists so that stays true in code.
+    const day = (ago: number) =>
+      new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10) + "T18:00:00Z";
+    await order({ placedAt: day(1), subtotal: 5000 });
+    await order({ placedAt: day(2), subtotal: 3000 });
+
+    const from = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    await rollup.recomputeStore(STORE, { from, to });
+
+    const summary = await platform.summary(30);
+    expect(summary.gmvCents).toBeGreaterThanOrEqual(8000);
+    expect(summary.ordersCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("counts only billing subscriptions as MRR", async () => {
+    // A trial is not recurring revenue however likely it looks, and counting
+    // it is the oldest way to flatter a dashboard.
+    const before = await platform.summary(30);
+
+    await admin.$executeRawUnsafe(
+      `INSERT INTO store_subscriptions (id,store_id,plan_code,status,created_at,updated_at)
+       SELECT $1,$2,code,'TRIALING'::"SubscriptionStatus",now(),now() FROM plans LIMIT 1`,
+      randomUUID(),
+      STORE,
+    );
+
+    const after = await platform.summary(30);
+    expect(after.mrrCents).toBe(before.mrrCents);
+    expect(after.trialingCount).toBe(before.trialingCount + 1);
+
+    await admin.$executeRawUnsafe(
+      `UPDATE store_subscriptions SET status='ACTIVE'::"SubscriptionStatus" WHERE store_id=$1`,
+      STORE,
+    );
+
+    const billing = await platform.summary(30);
+    expect(billing.mrrCents).toBeGreaterThan(before.mrrCents);
+    expect(billing.trialingCount).toBe(before.trialingCount);
+  });
+
+  it("counts the shops by status", async () => {
+    const summary = await platform.summary(30);
+    // The fixture store is ACTIVE, so at minimum it is in there.
+    expect(summary.stores.active).toBeGreaterThanOrEqual(1);
   });
 });

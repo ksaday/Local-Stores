@@ -34,6 +34,23 @@ const OWNER_PASSWORD = "bakery-dev-password-1";
  */
 const DRIVER_EMAIL = "driver@morseavebakery.test";
 
+/**
+ * A third account, because the platform console is unreachable without one.
+ *
+ * Nothing creates a Super Admin — not this seed, not a setup route — so a
+ * fresh clone could open every store screen and none of the platform ones.
+ * The console was effectively unverifiable, which is how it ended up with no
+ * figures on it for this long.
+ *
+ * Same password as the others. Dev only, and the seed refuses to run against a
+ * database that looks like production.
+ */
+const PLATFORM = "dd000000-0000-4000-8000-000000000098";
+const PLATFORM_EMAIL = "platform@localstores.test";
+
+/** Every account this seed owns, so re-running it can clear all of them. */
+const SEEDED_USERS = [OWNER, DRIVER, PLATFORM];
+
 const PRODUCTS = [
   ["Sourdough Loaf", "Bread", 800, "Naturally leavened, 48-hour cold ferment.", "Morse Bakehouse"],
   ["Rye Bread", "Bread", 650, "Dense caraway rye baked every morning.", null],
@@ -132,12 +149,27 @@ export async function clearSeededStore(client: SeedClient = db): Promise<void> {
     } else if (table === "stores") {
       await client.$executeRawUnsafe(`DELETE FROM stores WHERE id = $1`, STORE);
     } else if (table === "users") {
-      await client.$executeRawUnsafe(`DELETE FROM users WHERE id = $1`, OWNER);
+      // All the accounts this seed creates, not just the owner. Clearing one
+      // of three left the others behind, so a second `seed:dev` died on their
+      // primary keys — the seed was single-use without saying so.
+      await client.$executeRawUnsafe(`DELETE FROM users WHERE id = ANY($1)`, SEEDED_USERS);
     } else if (has(table, "store_id")) {
-      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE store_id = $1`, STORE);
+      // Both, where a table carries both. A seeded account can hold rows
+      // against a store this seed does not own — a membership on somebody's
+      // load fixture, say — and clearing only by store id leaves them behind
+      // to fail the foreign key when the account itself is deleted.
+      if (has(table, "user_id")) {
+        await client.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE store_id = $1 OR user_id = ANY($2)`,
+          STORE,
+          SEEDED_USERS,
+        );
+      } else {
+        await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE store_id = $1`, STORE);
+      }
     } else {
-      // Only the owner's own rows: sessions, tokens, identities.
-      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE user_id = $1`, OWNER);
+      // Only these accounts' own rows: sessions, tokens, identities.
+      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE user_id = ANY($1)`, SEEDED_USERS);
     }
   }
 }
@@ -162,6 +194,11 @@ async function main() {
       INSERT INTO users (id,email,name,status,password_hash,email_verified_at,created_at,updated_at)
       VALUES (${id},${email}::citext,${name},'ACTIVE',${passwordHash},now(),now(),now())`;
   }
+
+  await db.$executeRaw`
+    INSERT INTO users (id,email,name,status,platform_role,password_hash,email_verified_at,created_at,updated_at)
+    VALUES (${PLATFORM},${PLATFORM_EMAIL}::citext,'Platform Admin','ACTIVE','SUPER_ADMIN',
+            ${passwordHash},now(),now(),now())`;
 
   await db.$executeRaw`
     INSERT INTO stores (id,slug,name,business_type,status,owner_user_id,address_line1,city,state,postal_code,
@@ -259,6 +296,7 @@ async function main() {
   console.log(`  deliveries: /store/${STORE}/ops/deliveries`);
   console.log(`  sign in as: ${OWNER_EMAIL} / ${OWNER_PASSWORD}`);
   console.log(`          or: ${DRIVER_EMAIL} (a driver — same password)`);
+  console.log(`          or: ${PLATFORM_EMAIL} (the platform console — same password)`);
 }
 
 main()

@@ -6,6 +6,7 @@ import { RequirePermission } from "../../common/decorators/require-permission.de
 import { zodBody } from "../../common/pipes/zod-validation.pipe.js";
 import { AppError } from "../../common/errors/app-error.js";
 import type { AuthenticatedRequest } from "../../common/guards/jwt-auth.guard.js";
+import { PlatformReportsService } from "../reports/platform-reports.service.js";
 import { StoreApplicationService } from "./store-application.service.js";
 import { StoreService } from "./store.service.js";
 import { StaffService } from "./staff.service.js";
@@ -113,7 +114,21 @@ export class PlatformStoresController {
   constructor(
     private readonly applications: StoreApplicationService,
     private readonly stores: StoreService,
+    private readonly platformReports: PlatformReportsService,
   ) {}
+
+  /**
+   * The console's headline figures.
+   *
+   * `platform:billing` rather than `platform:stores`: this is the platform's
+   * own revenue beside the shops' trade, which is a narrower thing to be
+   * trusted with than reviewing an application.
+   */
+  @Get("summary")
+  @RequirePermission("platform:billing")
+  summary() {
+    return this.platformReports.summary();
+  }
 
   @Get("applications")
   @RequirePermission("platform:stores")

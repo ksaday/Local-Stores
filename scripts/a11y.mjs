@@ -37,6 +37,12 @@ const BASE = args.get("base") ?? "http://localhost:3100";
 const API = args.get("api") ?? "http://localhost:3001";
 const OWNER_EMAIL = args.get("email") ?? "owner@morseavebakery.test";
 const OWNER_PASSWORD = args.get("password") ?? "bakery-dev-password-1";
+/**
+ * The platform console is a different surface with a different account, and
+ * was unaudited until the dev seed started creating a Super Admin — there was
+ * simply no way to sign in to it.
+ */
+const PLATFORM_EMAIL = args.get("platformEmail") ?? "platform@localstores.test";
 
 /**
  * WCAG 2.2 AA, which is the target in NFR-A11Y-01.
@@ -71,7 +77,7 @@ async function main() {
 
     for (const { path, needsAuth, label } of pages) {
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-      if (needsAuth) await signIn(context);
+      if (needsAuth) await signIn(context, needsAuth === "platform" ? PLATFORM_EMAIL : OWNER_EMAIL);
 
       const page = await context.newPage();
       // Not `networkidle`: the ops screens hold an SSE stream open for live
@@ -277,13 +283,13 @@ async function skipLinkAudit(page) {
  * person would have. Hitting the API directly would set them on the wrong
  * origin and every ops page would bounce to the sign-in screen.
  */
-async function signIn(context) {
+async function signIn(context, email = OWNER_EMAIL) {
   const response = await context.request.post(`${BASE}/api/auth/login`, {
-    data: { email: OWNER_EMAIL, password: OWNER_PASSWORD },
+    data: { email, password: OWNER_PASSWORD },
   });
   if (!response.ok()) {
     throw new Error(
-      `Could not sign in as ${OWNER_EMAIL} (${response.status()}). Has the dev seed been run?`,
+      `Could not sign in as ${email} (${response.status()}). Has the dev seed been run?`,
     );
   }
 }
@@ -378,6 +384,11 @@ async function discoverPages(browser) {
     }
     pages.push({ path: "/account", label: "account", needsAuth: true });
     pages.push({ path: "/notifications", label: "notifications", needsAuth: true });
+
+    // The platform console, as the Super Admin.
+    pages.push({ path: "/platform", label: "platform console", needsAuth: "platform" });
+    pages.push({ path: "/platform/applications", label: "applications", needsAuth: "platform" });
+    pages.push({ path: "/platform/stores", label: "platform stores", needsAuth: "platform" });
   }
 
   return pages;

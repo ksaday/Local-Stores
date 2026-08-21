@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { ReportsController } from "./reports.controller.js";
+import { PlatformReportsService } from "./platform-reports.service.js";
 import { ReportsService } from "./reports.service.js";
 import { SalesRollupService } from "./sales-rollup.service.js";
 
@@ -12,7 +13,7 @@ import { SalesRollupService } from "./sales-rollup.service.js";
  */
 @Module({
   controllers: [ReportsController],
-  providers: [ReportsService, SalesRollupService],
-  exports: [ReportsService, SalesRollupService],
+  providers: [ReportsService, PlatformReportsService, SalesRollupService],
+  exports: [ReportsService, PlatformReportsService, SalesRollupService],
 })
 export class ReportsModule {}
