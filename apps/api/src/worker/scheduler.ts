@@ -4,6 +4,7 @@ import { MailQueue, MediaQueue } from "../infra/queue/queue.module.js";
 import { DunningService } from "../modules/billing/dunning.service.js";
 import { LowStockAlerts } from "../modules/inventory/low-stock-alerts.service.js";
 import { OrdersService } from "../modules/orders/orders.service.js";
+import { SalesRollupService } from "../modules/reports/sales-rollup.service.js";
 import { JobLease } from "./job-lease.service.js";
 import { OutboxRelay } from "./outbox-relay.js";
 
@@ -61,6 +62,7 @@ export class WorkerScheduler {
     private readonly mail: MailQueue,
     private readonly mediaQueue: MediaQueue,
     private readonly lowStock: LowStockAlerts,
+    private readonly salesRollup: SalesRollupService,
     private readonly lease: JobLease,
   ) {}
 
@@ -127,6 +129,25 @@ export class WorkerScheduler {
         run: async () => {
           const notified = await this.lowStock.run();
           return notified > 0 ? `low-stock digest to ${notified} store(s)` : "";
+        },
+      },
+      {
+        // Keeps the sales rollup within a few minutes of the orders it
+        // summarises, so an owner refreshing the dashboard after a busy lunch
+        // sees the lunch.
+        //
+        // Every fifteen minutes rather than nightly: a figure that is a day
+        // stale is not a dashboard, it is a report. The pass is bounded by the
+        // number of trading days it revisits, not by how many orders happened
+        // in them, so its cost does not grow with the platform.
+        name: "sales-rollup",
+        everyMs: 900_000,
+        // Recomputing is idempotent — two workers would write identical rows —
+        // but it is pure duplicated work over every store on the platform.
+        exclusive: true,
+        run: async () => {
+          const days = await this.salesRollup.runIncremental();
+          return days > 0 ? `rolled up ${days} store-day(s)` : "";
         },
       },
       {

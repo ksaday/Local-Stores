@@ -28,11 +28,12 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 
 ## Status
 
-**Phases 2, 4, 5, 7 and 8 complete, Phase 9 all but signature capture; the
-worker, the outbox and billing are in.** 531 tests passing. A shop can list
-products, take an order online or over the counter, work the queue, take cash
-or card, refund, print a receipt, run a promotion, send a parcel out with a
-driver and get a photograph back, and be billed for the platform itself.
+**Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
+accessibility work done; the worker, the outbox and billing are in.** 548 tests
+passing. A shop can list products, take an order online or over the counter,
+work the queue, take cash or card, refund, print a receipt, run a promotion,
+send a parcel out with a driver, get a photograph and a signature back, be
+billed for the platform itself, and read back what it all came to.
 
 Stripe has been exercised against real test keys end to end — a real Connect
 account, real charges, real refunds — not only against the fake provider.
@@ -109,6 +110,28 @@ post the same difference twice. The screen is a
 workspace you can leave and come back to: pick a shelf, type what is on it, and
 the quantity box keeps focus, because this is used standing up with a phone in
 one hand.
+
+**Reporting** — a `daily_store_sales` rollup, one row per shop per trading
+day, and the query layer that reads it. Reports never aggregate `orders`: "how
+did we do last quarter" is otherwise a scan of every order the shop has ever
+taken, and it gets slower every day they stay open.
+
+A day is the *store's* day. A Chicago bakery closing at 11pm files those
+takings under that Tuesday; bucketing on UTC would move the last hour of trade
+into Wednesday and put every daily figure out by one evening.
+
+Each pass recomputes a bounded window rather than incrementing a running total.
+Statuses change after an order is placed and refunds land days later, so a
+figure nudged by each event drifts away from the orders it claims to summarise
+with no way to notice. Rebuilding three days from source is cheap and
+self-healing. Refunds are dated by when the refund was issued rather than by
+the original sale, which is what stops a reconciled month from moving.
+
+Built and measured against a **million-order** dataset from the start, as §15
+asks, and the measurements changed the design twice — see
+[`scripts/seed-reporting-load.ts`](apps/api/scripts/seed-reporting-load.ts) and
+migration `00000000000022`. Rolling up a three-day window went from 741ms to
+20ms at p95; reading three years at day grain is 7ms against a 2-second target.
 
 **Notifications** — communications happen **inside the app**
 ([ADR 0001](docs/adr/0001-in-app-communications.md)): customers and staff learn
@@ -693,8 +716,10 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Reporting and dashboards** (Phase 10) — the sales, inventory and platform
-   figures every screen currently implies but nothing computes.
+1. **Reporting and dashboards** (Phase 10) — the sales rollup and its query
+   layer are built and measured; what is left is the rest of the report set
+   (top products, inventory, taxes, customers) and the dashboards that read
+   them.
 2. **Phases 11–12**: hardening, then deployment.
 
 Deliberately not next: the offline queue with Background Sync for driver

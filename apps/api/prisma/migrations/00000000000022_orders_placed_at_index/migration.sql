@@ -1,0 +1,25 @@
+-- An index for asking "what happened between these two dates".
+--
+-- `orders_store_status` — (store_id, status, placed_at) — serves the order
+-- queue, which asks for one status at a time and wants the newest first. The
+-- sales rollup asks the opposite question: every status that counts as trade,
+-- inside a narrow date range. Against that index the range is the *third*
+-- column behind eight different status values, so Postgres builds a bitmap
+-- from eight separate scans.
+--
+-- Measured against a million orders, rolling up a three-day window:
+--
+--   (store_id, status, placed_at)   144ms, 9,124 buffers   — bitmap of 8 scans
+--   (store_id, placed_at)            10ms, 4,530 buffers   — one range scan
+--
+-- The status filter still happens, just on the rows the range already found,
+-- which is 2,900 of them rather than a million.
+--
+-- This matters more over time than the numbers suggest: the rollup runs every
+-- fifteen minutes forever, and without this its cost grows with the shop's
+-- whole history rather than with the three days it is actually summarising.
+--
+-- CONCURRENTLY so building it does not lock out order writes. It cannot run
+-- inside a transaction, which is why this migration contains nothing else.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "orders_store_placed"
+  ON "orders" ("store_id", "placed_at");

@@ -72,6 +72,7 @@ afterAll(async () => {
 async function teardown(): Promise<void> {
   const stores = [STORE_A, STORE_B];
   await admin.$executeRaw`DELETE FROM deliveries WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM store_memberships WHERE store_id = ANY(${stores})`;
@@ -191,6 +192,40 @@ describe("cross-tenant isolation (RLS)", () => {
 
     expect(fromStoreA).toHaveLength(0);
     expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's takings from another store", async () => {
+    // The rollup is a summary of exactly the number a competitor would want:
+    // what this shop turned over, by day. It is derived data, which is the
+    // kind that gets a policy written for it last.
+    await admin.$executeRaw`
+      INSERT INTO daily_store_sales (store_id,date,orders_count,gross_cents,net_cents)
+      VALUES (${STORE_B},'2026-03-01'::date,12,50000,45000)`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.dailyStoreSales.findMany({ where: { storeId: STORE_B } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.dailyStoreSales.findMany({ where: { storeId: STORE_B } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("refuses to let a store write its own takings", async () => {
+    // Only the rollup writes here, and it runs as the platform. A store admin
+    // who could insert a row could restate last quarter without touching a
+    // single order, and nothing in the order history would contradict them.
+    await expect(
+      withTenantContext(prisma, scopedToA, (tx) =>
+        tx.dailyStoreSales.create({
+          data: { storeId: STORE_A, date: new Date("2026-03-02"), grossCents: 999_999n },
+        }),
+      ),
+    ).rejects.toThrow();
   });
 
   it("hides one store's deliveries from another store", async () => {

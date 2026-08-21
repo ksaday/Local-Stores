@@ -34,3 +34,15 @@ function toFieldErrors(error: ZodError) {
 export function zodBody(schema: ZodTypeAny): ZodValidationPipe {
   return new ZodValidationPipe(schema);
 }
+
+/**
+ * The same pipe for a query string: `@Query(zodQuery(SalesQuerySchema))`.
+ *
+ * A separate name rather than reusing `zodBody`, because `@Query(zodBody(…))`
+ * reads as a mistake at every call site. Note that everything in a query string
+ * arrives as a string — schemas here need `z.coerce` for numbers, where a body
+ * schema would not.
+ */
+export function zodQuery(schema: ZodTypeAny): ZodValidationPipe {
+  return new ZodValidationPipe(schema);
+}

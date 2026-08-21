@@ -12,6 +12,7 @@ import { MediaHttpModule } from "./modules/media/media-http.module.js";
 import { MediaModule } from "./modules/media/media.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
+import { ReportsModule } from "./modules/reports/reports.module.js";
 import { BillingModule } from "./modules/billing/billing.module.js";
 import { CartModule } from "./modules/cart/cart.module.js";
 import { CouponsModule } from "./modules/coupons/coupons.module.js";
@@ -56,6 +57,7 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     OrdersModule,
     PaymentsModule,
     BillingModule,
+    ReportsModule,
     HealthModule,
   ],
   providers: [
