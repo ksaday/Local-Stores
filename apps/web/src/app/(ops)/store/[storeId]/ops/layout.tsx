@@ -43,6 +43,7 @@ export default async function OpsLayout({
         { href: `${base}/catalog`, label: "Catalog" },
         { href: `${base}/inventory`, label: "Stock" },
         { href: `${base}/deliveries`, label: "Deliveries" },
+        { href: `${base}/reports`, label: "Reports" },
         { href: `${base}/coupons`, label: "Coupons" },
         { href: `${base}/settings`, label: "Settings" },
         { href: `${base}/staff`, label: "Team" },

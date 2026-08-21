@@ -317,16 +317,28 @@ async function discoverPages(browser) {
     );
   }
 
-  await page.goto(`${BASE}/stores`, { waitUntil: "domcontentloaded" });
-  const slug = await firstSegment(page, "/stores/");
+  // The signed-in owner's own shop, not whichever store happens to sort first
+  // in the public directory.
+  //
+  // Taking the first link meant any other store in the database could displace
+  // the seeded one — a load-test fixture with no catalog did exactly that, and
+  // the product page silently dropped out of the run. The page count barely
+  // moved, so the only sign was a missing line in a list of eighteen.
+  const storeResponse = await context.request.get(`${API}/api/v1/stores/${storeId}`);
+  const store = storeResponse.ok() ? await storeResponse.json().catch(() => null) : null;
+  const slug = store?.data?.slug;
+  if (!slug) throw new Error(`Could not read the slug for store ${storeId}.`);
 
-  let productPath = null;
-  if (slug) {
-    await page.goto(`${BASE}/stores/${slug}`, { waitUntil: "domcontentloaded" });
-    productPath = await page.evaluate(() => {
-      const a = [...document.querySelectorAll('a[href*="/products/"]')][0];
-      return a ? new URL(a.href).pathname : null;
-    });
+  await page.goto(`${BASE}/stores/${slug}`, { waitUntil: "domcontentloaded" });
+  const productPath = await page.evaluate(() => {
+    const a = [...document.querySelectorAll('a[href*="/products/"]')][0];
+    return a ? new URL(a.href).pathname : null;
+  });
+  if (!productPath) {
+    throw new Error(
+      `${slug} has no product to audit. Run the dev seed — a silently shorter ` +
+        `run is the failure this check exists to prevent.`,
+    );
   }
 
   await context.close();
@@ -339,13 +351,11 @@ async function discoverPages(browser) {
     { path: "/forgot-password", label: "forgot password" },
   ];
 
-  if (slug) {
-    pages.push(
-      { path: `/stores/${slug}`, label: "storefront" },
-      { path: `/stores/${slug}/cart`, label: "cart" },
-    );
-  }
-  if (productPath) pages.push({ path: productPath, label: "product" });
+  pages.push(
+    { path: `/stores/${slug}`, label: "storefront" },
+    { path: `/stores/${slug}/cart`, label: "cart" },
+    { path: productPath, label: "product" },
+  );
 
   // The ops surfaces. NFR-A11Y-01 holds them to AA for perception and
   // operation, which is what axe measures, so they are in the gate too.
@@ -355,6 +365,7 @@ async function discoverPages(browser) {
       ["catalog", "catalog"],
       ["inventory", "stock"],
       ["deliveries", "deliveries"],
+      ["reports", "reports"],
       ["till", "till"],
       ["staff", "staff"],
       ["coupons", "coupons"],
@@ -369,14 +380,6 @@ async function discoverPages(browser) {
   return pages;
 }
 
-async function firstSegment(page, prefix) {
-  return page.evaluate((p) => {
-    const a = [...document.querySelectorAll(`a[href*="${p}"]`)][0];
-    if (!a) return null;
-    const rest = new URL(a.href).pathname.slice(p.length);
-    return rest.split("/")[0] || null;
-  }, prefix);
-}
 
 function report(results) {
   let failures = 0;
