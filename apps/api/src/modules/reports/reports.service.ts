@@ -257,6 +257,65 @@ export class ReportsService {
       revenueCents: Number(r.revenue_cents),
     }));
   }
+
+  /**
+   * The shop's customers, best first (§6.2's CRM-lite).
+   *
+   * Reads `store_customers`, which is where the lifetime totals already live —
+   * see ADR 0003. Doing it live means grouping every order the shop has ever
+   * taken, fifty thousand ways, with no date range to bound it: ~1s at a
+   * million orders even before RLS is applied, and spilling to disk on the way.
+   *
+   * Sorted by spend or by recency. "Who has not been in lately" is the other
+   * question this list gets asked, and the one that turns a report into
+   * something a shop acts on.
+   *
+   * Guests are absent by construction: they have no account, and two orders
+   * from one email address are not evidence of one person.
+   */
+  async customers(
+    storeId: string,
+    input: { limit?: number; offset?: number; sort?: CustomerSort } = {},
+  ): Promise<CustomerList> {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    const offset = Math.max(input.offset ?? 0, 0);
+    const sort: CustomerSort = input.sort === "recent" ? "recent" : "spend";
+
+    const [rows, total] = await this.prisma.withTenant(
+      { storeId, isSuperAdmin: false },
+      async (tx) => [
+        await tx.storeCustomer.findMany({
+          where: { storeId },
+          orderBy: sort === "recent" ? { lastOrderAt: "desc" } : { lifetimeCents: "desc" },
+          take: limit,
+          skip: offset,
+          select: {
+            customerId: true,
+            name: true,
+            email: true,
+            ordersCount: true,
+            lifetimeCents: true,
+            firstOrderAt: true,
+            lastOrderAt: true,
+          },
+        }),
+        await tx.storeCustomer.count({ where: { storeId } }),
+      ],
+    );
+
+    return {
+      rows: rows.map((r) => ({
+        customerId: r.customerId,
+        name: r.name,
+        email: r.email,
+        ordersCount: r.ordersCount,
+        lifetimeCents: Number(r.lifetimeCents),
+        firstOrderAt: r.firstOrderAt?.toISOString() ?? null,
+        lastOrderAt: r.lastOrderAt?.toISOString() ?? null,
+      })),
+      total,
+    };
+  }
 }
 
 
@@ -277,6 +336,24 @@ export interface StoreSummary {
    */
   computedAt: string | null;
 }
+
+/** One person's history with this shop. */
+export interface CustomerRow {
+  customerId: string;
+  name: string;
+  email: string;
+  ordersCount: number;
+  lifetimeCents: number;
+  firstOrderAt: string | null;
+  lastOrderAt: string | null;
+}
+
+export interface CustomerList {
+  rows: CustomerRow[];
+  total: number;
+}
+
+export type CustomerSort = "spend" | "recent";
 
 /** What one line sold, over a window. */
 export interface ProductSales {

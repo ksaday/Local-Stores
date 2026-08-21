@@ -67,15 +67,27 @@ added on top of the policy's OR-chain.
 
 ## The shape a rollup takes
 
-Two of them exist now and they differ in one way worth copying deliberately.
+Three of them exist now, and they differ in ways worth copying deliberately.
 `daily_store_sales` is one row per day, so recomputing is a pure upsert.
 `daily_store_product_sales` is many rows per day, so it clears the window and
 rebuilds it inside one transaction — an upsert alone would leave a line whose
 order was later cancelled sitting there, still counted, with nothing to
 overwrite it.
 
+`store_customers` is the odd one: a lifetime total is not confined to a window,
+so it cannot recompute a slice of time at all. What bounds it instead is
+recomputing only the people who were *active* in the window, re-adding each of
+their whole histories — an indexed lookup per customer, because one person has
+a handful of orders however large the shop is. Live, that same list is ~1s at a
+million orders and spills to disk; off the rollup it is 22ms.
+
+It also has to snapshot the customer's name and email rather than joining
+`users`. That policy admits a store to its **staff** records, not to its
+customers', so a store-scoped join returns nothing at all.
+
 Backfills are chunked by month. Rebuilding three years in one transaction takes
-~17s and dies on the interactive transaction timeout, having done nothing.
+~17s and dies on the interactive transaction timeout, having done nothing — and
+a year-wide customer window blows the same timeout for the same reason.
 
 ## Worth revisiting if
 

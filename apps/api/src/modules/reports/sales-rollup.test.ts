@@ -38,6 +38,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
@@ -64,6 +65,7 @@ async function seed(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
@@ -73,6 +75,7 @@ async function cleanup(): Promise<void> {
   await admin.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM products WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM users WHERE email LIKE 'rollup-%@example.test'`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ${OWNER}`;
 }
 
@@ -83,6 +86,7 @@ async function order(input: {
   subtotal?: number;
   discount?: number;
   tax?: number;
+  customerId?: string;
 }): Promise<string> {
   const id = randomUUID();
   const subtotal = input.subtotal ?? 1000;
@@ -91,8 +95,9 @@ async function order(input: {
   await admin.$executeRawUnsafe(
     `INSERT INTO orders (id,store_id,order_number,channel,fulfillment,status,
        subtotal_cents,discount_cents,tax_cents,delivery_fee_cents,tip_cents,total_cents,
-       currency,placed_at,created_at,updated_at)
-     VALUES ($1,$2,$3,$4::"OrderChannel",'PICKUP',$5::"OrderStatus",$6,$7,$8,0,0,$9,'USD',$10::timestamptz,now(),now())`,
+       currency,customer_id,placed_at,created_at,updated_at)
+     VALUES ($1,$2,$3,$4::"OrderChannel",'PICKUP',$5::"OrderStatus",$6,$7,$8,0,0,$9,'USD',
+             $10,$11::timestamptz,now(),now())`,
     id,
     STORE,
     `R-${id.slice(0, 8)}`,
@@ -102,6 +107,7 @@ async function order(input: {
     discount,
     tax,
     subtotal - discount + tax,
+    input.customerId ?? null,
     input.placedAt,
   );
   return id;
@@ -178,6 +184,19 @@ async function variant(name: string, price: number): Promise<string> {
     price,
   );
   return variantId;
+}
+
+/** An account holder, so an order can belong to somebody. */
+async function customer(name: string): Promise<string> {
+  const id = randomUUID();
+  await admin.$executeRawUnsafe(
+    `INSERT INTO users (id,email,name,status,created_at,updated_at)
+     VALUES ($1,$2::citext,$3,'ACTIVE',now(),now())`,
+    id,
+    `rollup-${id.slice(0, 8)}@example.test`,
+    name,
+  );
+  return id;
 }
 
 const WINDOW = { from: "2026-03-01", to: "2026-03-31" };
@@ -606,5 +625,110 @@ describe("the dashboard summary", () => {
     // Null rather than "now": the dashboard says "no figures yet" instead of
     // claiming it is up to date with nothing behind it.
     expect(summary.computedAt).toBeNull();
+  });
+});
+
+describe("the customer list", () => {
+  it("totals a customer's whole history, not just the window rolled up", async () => {
+    // The point of the design: a lifetime figure is not confined to a window,
+    // so recomputing three days must still re-add everything before it.
+    const who = await customer("Regular Rita");
+    await order({ placedAt: "2026-01-05T18:00:00Z", subtotal: 1000, customerId: who });
+    await order({ placedAt: "2026-02-05T18:00:00Z", subtotal: 2000, customerId: who });
+    await order({ placedAt: "2026-03-05T18:00:00Z", subtotal: 3000, customerId: who });
+
+    // Only March is in the window, and Rita ordered in it.
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    const { rows } = await reports.customers(STORE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      name: "Regular Rita",
+      ordersCount: 3,
+      lifetimeCents: 6000,
+    });
+    expect(rows[0]!.firstOrderAt?.slice(0, 10)).toBe("2026-01-05");
+    expect(rows[0]!.lastOrderAt?.slice(0, 10)).toBe("2026-03-05");
+  });
+
+  it("leaves out guest orders entirely", async () => {
+    await order({ placedAt: "2026-03-06T18:00:00Z", subtotal: 5000 });
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    const { rows, total } = await reports.customers(STORE);
+    expect(rows).toHaveLength(0);
+    expect(total).toBe(0);
+  });
+
+  it("nets discounts off the lifetime figure", async () => {
+    const who = await customer("Discount Dan");
+    await order({
+      placedAt: "2026-03-07T18:00:00Z",
+      subtotal: 10_000,
+      discount: 2_500,
+      tax: 900,
+      customerId: who,
+    });
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    // Tax is not the shop's money and is not the customer's spend with them.
+    expect((await reports.customers(STORE)).rows[0]!.lifetimeCents).toBe(7_500);
+  });
+
+  it("ignores orders that never became trade", async () => {
+    const who = await customer("Browsing Bob");
+    await order({ placedAt: "2026-03-08T18:00:00Z", status: "CANCELLED", customerId: who });
+    await order({ placedAt: "2026-03-08T18:00:00Z", status: "PENDING", customerId: who });
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    expect((await reports.customers(STORE)).rows).toHaveLength(0);
+  });
+
+  it("stops counting somebody whose only order was cancelled", async () => {
+    const who = await customer("Changed Their Mind");
+    const id = await order({
+      placedAt: "2026-03-09T18:00:00Z",
+      status: "CONFIRMED",
+      customerId: who,
+    });
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+    expect((await reports.customers(STORE)).rows).toHaveLength(1);
+
+    await admin.$executeRawUnsafe(
+      `UPDATE orders SET status = 'CANCELLED'::"OrderStatus" WHERE id = $1`,
+      id,
+    );
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    // Not left behind with stale totals: the sweep clears what it rebuilds.
+    expect((await reports.customers(STORE)).rows).toHaveLength(0);
+  });
+
+  it("does not double-count when the window is rebuilt", async () => {
+    const who = await customer("Repeat Recompute");
+    await order({ placedAt: "2026-03-10T18:00:00Z", subtotal: 1500, customerId: who });
+
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    expect((await reports.customers(STORE)).rows[0]).toMatchObject({
+      ordersCount: 1,
+      lifetimeCents: 1500,
+    });
+  });
+
+  it("sorts by spend, and by recency when asked", async () => {
+    const big = await customer("Big Spender");
+    const recent = await customer("Recent Visitor");
+    await order({ placedAt: "2026-03-01T18:00:00Z", subtotal: 90_000, customerId: big });
+    await order({ placedAt: "2026-03-30T18:00:00Z", subtotal: 100, customerId: recent });
+    await rollup.recomputeStoreCustomers(STORE, WINDOW);
+
+    const bySpend = await reports.customers(STORE, { sort: "spend" });
+    expect(bySpend.rows[0]!.name).toBe("Big Spender");
+
+    const byRecent = await reports.customers(STORE, { sort: "recent" });
+    expect(byRecent.rows[0]!.name).toBe("Recent Visitor");
   });
 });

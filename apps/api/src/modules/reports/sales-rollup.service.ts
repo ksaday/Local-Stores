@@ -167,6 +167,7 @@ export class SalesRollupService {
       try {
         written += await this.recomputeStore(store.id, window);
         await this.recomputeStoreProducts(store.id, window);
+        await this.recomputeStoreCustomers(store.id, window);
       } catch (err) {
         // One shop's bad data must not stop the rest of the platform's figures.
         this.logger.error(`Rollup failed for store ${store.id}: ${String(err)}`);
@@ -230,6 +231,68 @@ export class SalesRollupService {
   }
 
   /**
+   * The shop's customer list, for everyone who ordered in the window.
+   *
+   * The other two rollups recompute a slice of *time*. This one cannot: a
+   * lifetime total is not confined to a window, so a customer who ordered
+   * today needs their whole history re-added, not the last three days of it.
+   *
+   * What keeps that bounded is recomputing only the people who were active.
+   * Their full history is then an indexed lookup per customer — orders is
+   * indexed on (customer_id, placed_at), and one person has a handful of
+   * orders however large the shop is.
+   *
+   * Cleared and rebuilt for exactly those customers, like the product rollup:
+   * somebody whose only order was cancelled should stop being a customer
+   * rather than keep stale totals nothing will overwrite.
+   */
+  async recomputeStoreCustomers(storeId: string, window: RollupWindow): Promise<number> {
+    return this.prisma.withTenant({ isSuperAdmin: true }, async (tx) => {
+      await tx.$executeRaw`
+        DELETE FROM store_customers
+        WHERE store_id = ${storeId}
+          AND customer_id IN (
+            SELECT DISTINCT customer_id FROM orders
+            WHERE store_id = ${storeId}
+              AND customer_id IS NOT NULL
+              AND placed_at >= ${window.from}::date - interval '1 day'
+              AND placed_at <  ${window.to}::date + interval '2 days'
+          )
+      `;
+
+      return tx.$executeRaw`
+        INSERT INTO store_customers (
+          store_id, customer_id, name, email, orders_count, lifetime_cents,
+          first_order_at, last_order_at, computed_at
+        )
+        SELECT
+          ${storeId},
+          o.customer_id,
+          -- Readable here only because this runs as the platform.
+          min(u.name),
+          min(u.email),
+          count(*)::int,
+          sum(o.subtotal_cents - o.discount_cents)::bigint,
+          min(o.placed_at),
+          max(o.placed_at),
+          now()
+        FROM orders o
+        JOIN users u ON u.id = o.customer_id
+        WHERE o.store_id = ${storeId}
+          AND o.status::text = ANY(${COUNTED_STATUSES as unknown as string[]})
+          AND o.customer_id IN (
+            SELECT DISTINCT customer_id FROM orders
+            WHERE store_id = ${storeId}
+              AND customer_id IS NOT NULL
+              AND placed_at >= ${window.from}::date - interval '1 day'
+              AND placed_at <  ${window.to}::date + interval '2 days'
+          )
+        GROUP BY o.customer_id
+      `;
+    });
+  }
+
+  /**
    * Rebuilds a store's history. For a backfill after an import or a bug.
    *
    * Chunked, because the product rollup clears and rebuilds inside a
@@ -247,6 +310,11 @@ export class SalesRollupService {
     for (const chunk of monthlyChunks(window)) {
       days += await this.recomputeStore(storeId, chunk);
       lines += await this.recomputeStoreProducts(storeId, chunk);
+      // Customers are recomputed from their whole history each time they turn
+      // up in a chunk, so a backfill revisits a regular once per month they
+      // shopped in. Wasteful, and still far cheaper than the alternative of
+      // grouping every order the shop has ever taken.
+      await this.recomputeStoreCustomers(storeId, chunk);
     }
 
     this.logger.log(

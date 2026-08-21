@@ -93,6 +93,8 @@ model User {
   notificationPreferences NotificationPreference[]
   notifications           Notification[]
 
+  storeRollups StoreCustomer[]
+
   @@map("users")
 }
 
@@ -176,6 +178,7 @@ model Store {
 
   dailySales DailyStoreSales[]
   dailyProductSales DailyStoreProductSales[]
+  customerRollups   StoreCustomer[]
 
   @@map("stores")
 }
@@ -1266,4 +1269,35 @@ model DailyStoreProductSales {
 
   @@id([storeId, date, lineKey])
   @@map("daily_store_product_sales")
+}
+
+/// One person's history with one shop (Phase 10, ADR 0003).
+///
+/// The CRM-lite list in §6.2. Guests have no row: a checkout without an account
+/// has only a contact email, and treating two orders from the same address as
+/// the same person is a guess this table declines to make.
+model StoreCustomer {
+  storeId    String @map("store_id")
+  customerId String @map("customer_id")
+
+  /// Snapshotted, not joined: `users_read` admits a store to its staff, not to
+  /// its customers, so a store-scoped join returns nothing. See the migration.
+  name  String
+  email String @db.Citext
+
+  ordersCount   Int    @default(0) @map("orders_count")
+  lifetimeCents BigInt @default(0) @map("lifetime_cents")
+
+  firstOrderAt DateTime? @map("first_order_at")
+  lastOrderAt  DateTime? @map("last_order_at")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  store    Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer User  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@id([storeId, customerId])
+  @@index([storeId, lifetimeCents(sort: Desc)], map: "store_customers_lifetime")
+  @@index([storeId, lastOrderAt(sort: Desc)], map: "store_customers_last_order")
+  @@map("store_customers")
 }

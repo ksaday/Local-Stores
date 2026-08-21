@@ -366,6 +366,7 @@ async function discoverPages(browser) {
       ["catalog", "catalog"],
       ["inventory", "stock"],
       ["deliveries", "deliveries"],
+      ["customers", "customers"],
       ["reports", "reports"],
       ["till", "till"],
       ["staff", "staff"],

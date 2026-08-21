@@ -28,6 +28,12 @@ const ORDERS = Number(args.get("orders") ?? 1_000_000);
 const YEARS = Number(args.get("years") ?? 3);
 /** Catalog size. Enough for a long tail; a shop with ten lines ranks itself. */
 const PRODUCTS = Number(args.get("products") ?? 200);
+/**
+ * Distinct account holders. Roughly one per twenty orders, with the rest left
+ * as guests — a local shop has regulars and passers-by, and a customer report
+ * that only ever sees accounts would be measured against the wrong shape.
+ */
+const CUSTOMERS = Number(args.get("customers") ?? 50_000);
 /** Big enough that the per-statement overhead disappears, small enough to watch. */
 const BATCH = 50_000;
 
@@ -64,6 +70,8 @@ async function main() {
   await prisma.$executeRawUnsafe(`DELETE FROM orders WHERE store_id = '${STORE_ID}'`);
   await prisma.$executeRawUnsafe(`DELETE FROM product_variants WHERE store_id = '${STORE_ID}'`);
   await prisma.$executeRawUnsafe(`DELETE FROM products WHERE store_id = '${STORE_ID}'`);
+  // Customers last: orders reference them, so they cannot go first.
+  await prisma.$executeRawUnsafe(`DELETE FROM users WHERE email LIKE 'load-customer-%'`);
 
   for (let offset = 0; offset < ORDERS; offset += BATCH) {
     const count = Math.min(BATCH, ORDERS - offset);
@@ -120,6 +128,41 @@ async function main() {
     process.stdout.write(`\r  orders: ${(offset + count).toLocaleString()}`);
   }
   console.log();
+
+  // Account holders, and the orders that belong to them.
+  //
+  // Two thirds of orders get one; the rest stay guest checkouts with only a
+  // contact email. A shop's customer list is built from the accounts, so the
+  // guests are what stops the report from quietly assuming every order has one.
+  console.log(`Adding ${CUSTOMERS.toLocaleString()} customers…`);
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO users (id, email, name, status, created_at, updated_at)
+    SELECT gen_random_uuid()::text,
+           ('load-customer-' || g || '@example.test')::citext,
+           'Load Customer ' || g,
+           'ACTIVE', now(), now()
+    FROM generate_series(1, ${CUSTOMERS}) g
+    ON CONFLICT DO NOTHING`);
+
+  // Zipf-ish again: a few regulars carry a lot of the orders, most people
+  // appear once or twice. A uniform spread would make every customer's
+  // lifetime value the same and give the report nothing to rank.
+  await prisma.$executeRawUnsafe(`
+    WITH numbered AS (
+      SELECT id, row_number() OVER (ORDER BY email) AS n
+      FROM users WHERE email LIKE 'load-customer-%'
+    ),
+    picked AS (
+      SELECT o.id AS order_id,
+             1 + floor(power(random(), 2) * ${CUSTOMERS})::int AS pick
+      FROM orders o
+      WHERE o.store_id = '${STORE_ID}' AND random() < 0.67
+    )
+    UPDATE orders o
+    SET customer_id = c.id
+    FROM picked p JOIN numbered c ON c.n = p.pick
+    WHERE o.id = p.order_id`);
 
   // A catalog, and a line or three on every order.
   //

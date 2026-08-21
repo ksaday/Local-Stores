@@ -12,6 +12,14 @@ const SalesQuerySchema = z
   })
   .strict();
 
+const CustomersQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+    sort: z.enum(["spend", "recent"]).optional(),
+  })
+  .strict();
+
 const TopProductsQuerySchema = z
   .object({
     from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
@@ -46,6 +54,21 @@ export class ReportsController {
     @Query(zodQuery(SalesQuerySchema)) query: z.infer<typeof SalesQuerySchema>,
   ) {
     return this.reports.sales(storeId, query);
+  }
+
+  /**
+   * The shop's customer list.
+   *
+   * `customers:read` rather than `reports:sales`: this is names and addresses
+   * of people, which is a different thing to be trusted with than takings.
+   */
+  @Get("customers")
+  @RequirePermission("customers:read")
+  customers(
+    @Param("storeId") storeId: string,
+    @Query(zodQuery(CustomersQuerySchema)) query: z.infer<typeof CustomersQuerySchema>,
+  ) {
+    return this.reports.customers(storeId, query);
   }
 
   @Get("top-products")

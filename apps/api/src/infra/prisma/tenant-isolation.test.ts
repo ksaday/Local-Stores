@@ -72,6 +72,7 @@ afterAll(async () => {
 async function teardown(): Promise<void> {
   const stores = [STORE_A, STORE_B];
   await admin.$executeRaw`DELETE FROM deliveries WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ANY(${stores})`;
@@ -232,6 +233,28 @@ describe("cross-tenant isolation (RLS)", () => {
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
       (tx) => tx.dailyStoreProductSales.findMany({ where: { storeId: STORE_B } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's customer list from another store", async () => {
+    // Names and email addresses of real people, and the rollup snapshots them
+    // rather than joining `users` — so this table has to carry its own policy
+    // instead of inheriting the protection the join used to provide.
+    await admin.$executeRaw`
+      INSERT INTO store_customers
+        (store_id,customer_id,name,email,orders_count,lifetime_cents)
+      VALUES (${STORE_B},${OWNER_B},'Owner B','isolation-b@example.com'::citext,9,90000)`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.storeCustomer.findMany({ where: { storeId: STORE_B } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.storeCustomer.findMany({ where: { storeId: STORE_B } }),
     );
 
     expect(fromStoreA).toHaveLength(0);
