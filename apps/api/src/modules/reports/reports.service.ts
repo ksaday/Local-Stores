@@ -28,13 +28,6 @@ export interface SalesReport {
 /** A quarter of daily points is a readable chart; a decade is a denial of service. */
 const MAX_DAYS = 1_100;
 
-/**
- * The longest window `topProducts` will answer for.
- *
- * Not a product preference — a measured ceiling. See the note on the method.
- */
-const MAX_PRODUCT_DAYS = 92;
-
 @Injectable()
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -137,35 +130,30 @@ export class ReportsService {
   /**
    * What sold most, over a window (FR-REP-02).
    *
-   * Read live from `order_items` rather than from a rollup, unlike `sales()`.
-   * A product rollup would be (days × catalog) rows written every pass to
-   * answer a question asked far less often than the takings one.
+   * Reads `daily_store_product_sales`, not `order_items` — the same move
+   * `sales()` makes, and for the reason in ADR 0003: asking the transactional
+   * tables directly puts the planner on a one-row estimate under RLS.
    *
-   * Measured through this method, as the restricted role, against a million
-   * orders and 2.1 million lines: 30 days ~200ms, 90 days ~600ms, a year
-   * ~2.4s. The 2s p95 target is why the window is capped at a quarter.
+   * Measured through this method against the same million-order fixture,
+   * before and after the rollup:
    *
-   * The year case is not slow because of the aggregation — the identical query
-   * runs in ~650ms as the table owner. It is slow because of RLS. The policy
-   * on `orders` is an OR-chain over `current_setting(...)`, whose selectivity
-   * Postgres cannot estimate, so the scan is planned at **one row** against
-   * 74,000 actual. On that estimate the planner picks a nested loop and probes
-   * `order_items` a quarter of a million times. Forcing the order set through
-   * a MATERIALIZED CTE makes it worse, because the CTE inherits the same
-   * estimate.
+   *            live over order_items        off the rollup
+   *   30 days              292ms                     21ms
+   *   90 days              884ms                     55ms
+   *   1 year             2,350ms  (over target)     235ms
+   *   3 years          not offered                  721ms
    *
-   * The measurements, and the three fixes that did not work, are in
-   * docs/adr/0003. The short version: every analytical query over `orders`
-   * meets the same wall, and the way past it is a rollup — which is how
-   * `sales()` sidesteps it entirely.
+   * The 92-day cap existed because of the middle row. It is gone, and so is
+   * the ceiling that made it necessary: the cost is now (days × catalogue)
+   * rather than every line the shop has ever sold.
    *
-   * There is also deliberately no per-product order count. `count(DISTINCT
-   * order_id)` measured at 1.1s of extra work on the year query to distinguish
-   * "three units in one basket" from "three customers". Units and revenue
-   * answer what the report is for.
+   * Grouped by line rather than by variant: "large" and "small" of the same
+   * cake are different things to reorder, and an ad-hoc POS line keeps its own
+   * name instead of joining a nameless bucket.
    *
-   * Grouped by variant: "large" and "small" of the same cake are different
-   * things to reorder, and rolling them together hides which one moves.
+   * The name shown is the most recent snapshot in the window. A product
+   * renamed halfway through a quarter should read as what it is called now,
+   * while the figures underneath stay whatever was actually sold.
    */
   async topProducts(
     storeId: string,
@@ -176,10 +164,8 @@ export class ReportsService {
     if (to < from) throw AppError.validation("The end of the range is before the start.");
 
     const days = Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
-    if (days > MAX_PRODUCT_DAYS) {
-      throw AppError.validation("Best sellers cover up to three months at a time.", [
-        { field: "from", code: "RANGE_TOO_LONG", message: `At most ${MAX_PRODUCT_DAYS} days.` },
-      ]);
+    if (days > MAX_DAYS) {
+      throw AppError.validation(`That range is longer than ${Math.floor(MAX_DAYS / 365)} years.`);
     }
 
     const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
@@ -195,26 +181,15 @@ export class ReportsService {
         }[]
       >`
         SELECT
-          oi.variant_id,
-          -- The snapshot, not the product's current name: this is what the
-          -- customer was sold, and the row must still read correctly after the
-          -- line is renamed or deleted from the catalog.
-          min(oi.product_name)          AS name,
-          min(oi.sku)                   AS sku,
-          sum(oi.qty)::bigint           AS units,
-          sum(oi.line_total_cents)::bigint AS revenue_cents
-        FROM order_items oi
-        JOIN orders o ON o.id = oi.order_id
-        WHERE oi.store_id = ${storeId}
-          -- Redundant against the join, and not optional: without a store_id
-          -- predicate on the orders table itself the planner cannot use the
-          -- store_id/placed_at index, and falls back to scanning every order
-          -- the shop has ever taken. It halved a thirty-day query.
-          AND o.store_id = ${storeId}
-          AND o.status::text = ANY(${COUNTED_STATUSES})
-          AND o.placed_at >= ${input.from}::date
-          AND o.placed_at < ${input.to}::date + interval '1 day'
-        GROUP BY oi.variant_id
+          (array_agg(variant_id ORDER BY date DESC))[1]   AS variant_id,
+          (array_agg(product_name ORDER BY date DESC))[1] AS name,
+          (array_agg(sku ORDER BY date DESC))[1]          AS sku,
+          sum(units)::bigint                              AS units,
+          sum(revenue_cents)::bigint                      AS revenue_cents
+        FROM daily_store_product_sales
+        WHERE store_id = ${storeId}
+          AND date BETWEEN ${input.from}::date AND ${input.to}::date
+        GROUP BY line_key
         ORDER BY revenue_cents DESC
         LIMIT ${limit}
       `,
@@ -230,25 +205,6 @@ export class ReportsService {
   }
 }
 
-/**
- * The order states that count as trade — the same set the rollup uses.
- *
- * Refunds are deliberately not netted off here. A refund is recorded against a
- * payment, not against a line, so there is no honest way to say *which* item
- * came back: attributing it to the biggest line, or spreading it across the
- * order, would both invent a number. This report answers "what leaves the
- * shelves", and the takings report answers "what we kept".
- */
-const COUNTED_STATUSES = [
-  "CONFIRMED",
-  "PREPARING",
-  "READY",
-  "PICKED_UP",
-  "OUT_FOR_DELIVERY",
-  "DELIVERED",
-  "REFUNDED",
-  "RETURNED",
-];
 
 /** What one line sold, over a window. */
 export interface ProductSales {

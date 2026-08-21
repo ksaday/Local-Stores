@@ -5,7 +5,6 @@ import { Card } from "@/components/shell";
 import type { Store } from "@/lib/types";
 import { SalesChart } from "./sales-chart";
 import {
-  MAX_PRODUCT_DAYS,
   RANGES,
   densify,
   isRangeKey,
@@ -32,8 +31,6 @@ export default async function ReportsPage({
   const from = new Date(to.getTime() - (days - 1) * 86_400_000);
   const query = `from=${iso(from)}&to=${iso(to)}&grain=${grain}`;
 
-  const wantsProducts = days <= MAX_PRODUCT_DAYS;
-
   const [store, report, products] = await Promise.all([
     api<Store>(`/stores/${storeId}`),
     api<SalesReport>(`/stores/${storeId}/reports/sales?${query}`).catch((err) => {
@@ -43,14 +40,12 @@ export default async function ReportsPage({
       if (err instanceof ApiError && err.status === 403) return null;
       throw err;
     }),
-    wantsProducts
-      ? api<ProductSales[]>(`/stores/${storeId}/reports/top-products?${query.replace(/&grain=\w+/, "")}&limit=10`).catch(
-          (err) => {
-            if (err instanceof ApiError && err.status === 403) return null;
-            throw err;
-          },
-        )
-      : Promise.resolve(null),
+    api<ProductSales[]>(
+      `/stores/${storeId}/reports/top-products?${query.replace(/&grain=\w+/, "")}&limit=10`,
+    ).catch((err) => {
+      if (err instanceof ApiError && err.status === 403) return null;
+      throw err;
+    }),
   ]);
 
   if (!report) {
@@ -124,19 +119,8 @@ export default async function ReportsPage({
         )}
       </Card>
 
-      <Card
-        title="Best sellers"
-        description={
-          wantsProducts
-            ? "By revenue, over the selected period."
-            : "Available for up to three months at a time."
-        }
-      >
-        {!wantsProducts ? (
-          <p className="text-sm text-ink-muted">
-            Pick 90 days or less to see which lines are selling.
-          </p>
-        ) : !products || products.length === 0 ? (
+      <Card title="Best sellers" description="By revenue, over the selected period.">
+        {!products || products.length === 0 ? (
           <p className="text-sm text-ink-muted">Nothing sold in this period yet.</p>
         ) : (
           <div className="overflow-x-auto">

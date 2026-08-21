@@ -54,14 +54,28 @@ added on top of the policy's OR-chain.
 - `sales()` reads `daily_store_sales` and is unaffected: three years at day
   grain is 7ms, because the cost is the number of days rather than the number
   of orders. This is the pattern to copy.
-- `topProducts()` has no rollup and is therefore capped at 92 days, where it
-  measures ~600ms. The cap is a measurement, not a product opinion.
+- `topProducts()` was capped at 92 days while it read `order_items` live. It
+  now reads `daily_store_product_sales` (migration 23) and the cap is gone:
+  a year went from 2,350ms to 235ms, three years answers in 721ms, and thirty
+  days is 21ms. That is this ADR applied rather than an exception to it.
 - Every remaining report gets the same question asked of it first: *what does
   this cost at a million orders under RLS?* Inventory and tax reports aggregate
   the same tables and will meet the same wall.
 - None of this is a reason to weaken a policy. RLS is the tenancy boundary and
   the isolation suite is the release gate; the answer is to stop asking
   transactional tables analytical questions.
+
+## The shape a rollup takes
+
+Two of them exist now and they differ in one way worth copying deliberately.
+`daily_store_sales` is one row per day, so recomputing is a pure upsert.
+`daily_store_product_sales` is many rows per day, so it clears the window and
+rebuilds it inside one transaction — an upsert alone would leave a line whose
+order was later cancelled sitting there, still counted, with nothing to
+overwrite it.
+
+Backfills are chunked by month. Rebuilding three years in one transaction takes
+~17s and dies on the interactive transaction timeout, having done nothing.
 
 ## Worth revisiting if
 

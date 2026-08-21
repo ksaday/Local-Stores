@@ -72,6 +72,7 @@ afterAll(async () => {
 async function teardown(): Promise<void> {
   const stores = [STORE_A, STORE_B];
   await admin.$executeRaw`DELETE FROM deliveries WHERE store_id = ANY(${stores})`;
+  await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM carts WHERE store_id = ANY(${stores})`;
@@ -209,6 +210,28 @@ describe("cross-tenant isolation (RLS)", () => {
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
       (tx) => tx.dailyStoreSales.findMany({ where: { storeId: STORE_B } }),
+    );
+
+    expect(fromStoreA).toHaveLength(0);
+    expect(fromStoreB).toHaveLength(1);
+  });
+
+  it("hides one store's best sellers from another store", async () => {
+    // Finer-grained than the takings rollup and correspondingly more useful to
+    // a competitor: not just what a shop turned over, but exactly which lines
+    // carry it.
+    await admin.$executeRaw`
+      INSERT INTO daily_store_product_sales
+        (store_id,date,line_key,product_name,units,revenue_cents)
+      VALUES (${STORE_B},'2026-03-01'::date,'name:Secret bestseller','Secret bestseller',40,20000)`;
+
+    const fromStoreA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.dailyStoreProductSales.findMany({ where: { storeId: STORE_B } }),
+    );
+    const fromStoreB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.dailyStoreProductSales.findMany({ where: { storeId: STORE_B } }),
     );
 
     expect(fromStoreA).toHaveLength(0);

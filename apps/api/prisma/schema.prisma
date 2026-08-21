@@ -175,6 +175,7 @@ model Store {
   billingNotices    BillingNotification[]
 
   dailySales DailyStoreSales[]
+  dailyProductSales DailyStoreProductSales[]
 
   @@map("stores")
 }
@@ -530,6 +531,8 @@ model ProductVariant {
 
   @@index([productId])
   @@index([storeId, barcode])
+  dailySales DailyStoreProductSales[]
+
   @@map("product_variants")
 }
 
@@ -1231,4 +1234,36 @@ model DailyStoreSales {
 
   @@id([storeId, date])
   @@map("daily_store_sales")
+}
+
+/// One line's trading day (Phase 10, ADR 0003).
+///
+/// The finer sibling of [DailyStoreSales]. Best sellers reads this rather than
+/// aggregating `order_items`, because under RLS that query's plan collapses —
+/// see the ADR for the measurements.
+model DailyStoreProductSales {
+  storeId String   @map("store_id")
+  date    DateTime @db.Date
+
+  /// `variant_id`, or `name:<product name>` for an ad-hoc POS line that names
+  /// no catalogue item. A nullable column cannot key a row, and collapsing
+  /// every ad-hoc line into one nameless bucket loses what they were.
+  lineKey   String  @map("line_key")
+  variantId String? @map("variant_id")
+
+  /// Snapshots from the order line: what the customer was sold, not what the
+  /// catalogue says today.
+  productName String  @map("product_name")
+  sku         String?
+
+  units        Int    @default(0)
+  revenueCents BigInt @default(0) @map("revenue_cents")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  store   Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@id([storeId, date, lineKey])
+  @@map("daily_store_product_sales")
 }

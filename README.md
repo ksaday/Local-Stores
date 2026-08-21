@@ -143,10 +143,10 @@ quarter of a million times, which is the entire difference between 650ms and
 2.4s on the same SQL over the same data.
 
 Three plausible fixes did not work — scalar-subquery InitPlans, removing the
-duplicate `FOR ALL` policy, a MATERIALIZED CTE — so reports read rollups, or
-declare a bounded window and say so. Best sellers is capped at a quarter for
-exactly this reason, and the cap is a measurement rather than a product
-opinion.
+duplicate `FOR ALL` policy, a MATERIALIZED CTE — so reports read rollups
+instead. Best sellers was briefly capped at a quarter because it did not have
+one; with `daily_store_product_sales` behind it, a year went from 2,350ms to
+235ms and the cap is gone.
 
 **Notifications** — communications happen **inside the app**
 ([ADR 0001](docs/adr/0001-in-app-communications.md)): customers and staff learn

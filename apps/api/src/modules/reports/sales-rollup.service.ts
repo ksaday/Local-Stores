@@ -166,6 +166,7 @@ export class SalesRollupService {
     for (const store of stores) {
       try {
         written += await this.recomputeStore(store.id, window);
+        await this.recomputeStoreProducts(store.id, window);
       } catch (err) {
         // One shop's bad data must not stop the rest of the platform's figures.
         this.logger.error(`Rollup failed for store ${store.id}: ${String(err)}`);
@@ -174,12 +175,102 @@ export class SalesRollupService {
     return written;
   }
 
-  /** Rebuilds a store's history. For a backfill after an import or a bug. */
-  async backfill(storeId: string, window: RollupWindow): Promise<number> {
-    const written = await this.recomputeStore(storeId, window);
-    this.logger.log(`Backfilled ${written} day(s) for ${storeId} (${window.from}…${window.to})`);
-    return written;
+  /**
+   * The same window, one level finer: what each line sold, per day.
+   *
+   * Cleared and rebuilt rather than upserted. A day here is many rows, and a
+   * line that stops qualifying — its order cancelled after the fact — has
+   * nothing to overwrite it and would otherwise stay counted forever. The
+   * sales rollup gets away with a pure upsert because a day there is exactly
+   * one row.
+   *
+   * Both statements run inside `withTenant`, which is a transaction, so no
+   * reader sees the window empty.
+   */
+  async recomputeStoreProducts(storeId: string, window: RollupWindow): Promise<number> {
+    return this.prisma.withTenant({ isSuperAdmin: true }, async (tx) => {
+      await tx.$executeRaw`
+        DELETE FROM daily_store_product_sales
+        WHERE store_id = ${storeId}
+          AND date BETWEEN ${window.from}::date AND ${window.to}::date
+      `;
+
+      return tx.$executeRaw`
+        INSERT INTO daily_store_product_sales (
+          store_id, date, line_key, variant_id, product_name, sku,
+          units, revenue_cents, computed_at
+        )
+        SELECT
+          ${storeId},
+          (o.placed_at AT TIME ZONE s.timezone)::date,
+          -- Ad-hoc POS lines name no catalogue item, and a NULL cannot key a
+          -- row; keying those by name keeps them apart from each other.
+          COALESCE(oi.variant_id, 'name:' || oi.product_name),
+          oi.variant_id,
+          min(oi.product_name),
+          min(oi.sku),
+          sum(oi.qty)::int,
+          sum(oi.line_total_cents)::bigint,
+          now()
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        JOIN stores s ON s.id = ${storeId}
+        WHERE oi.store_id = ${storeId}
+          -- On orders as well as order_items: without it the planner cannot
+          -- use the store_id/placed_at index. See ADR 0003.
+          AND o.store_id = ${storeId}
+          AND o.status::text = ANY(${COUNTED_STATUSES as unknown as string[]})
+          AND o.placed_at >= ${window.from}::date - interval '1 day'
+          AND o.placed_at <  ${window.to}::date + interval '2 days'
+          AND (o.placed_at AT TIME ZONE s.timezone)::date
+              BETWEEN ${window.from}::date AND ${window.to}::date
+        GROUP BY 2, 3, oi.variant_id
+      `;
+    });
   }
+
+  /**
+   * Rebuilds a store's history. For a backfill after an import or a bug.
+   *
+   * Chunked, because the product rollup clears and rebuilds inside a
+   * transaction and three years of it takes ~17s — past the interactive
+   * transaction timeout, so the whole backfill failed at the end having done
+   * nothing. A month at a time keeps each transaction short whatever the shop's
+   * history looks like, and a chunk that fails leaves the ones before it done.
+   *
+   * The scheduled pass never comes near this: it recomputes three days.
+   */
+  async backfill(storeId: string, window: RollupWindow): Promise<number> {
+    let days = 0;
+    let lines = 0;
+
+    for (const chunk of monthlyChunks(window)) {
+      days += await this.recomputeStore(storeId, chunk);
+      lines += await this.recomputeStoreProducts(storeId, chunk);
+    }
+
+    this.logger.log(
+      `Backfilled ${days} day(s) and ${lines} line-day(s) for ${storeId} (${window.from}…${window.to})`,
+    );
+    return days;
+  }
+}
+
+/** Splits a window into calendar months, inclusive of both ends. */
+function monthlyChunks(window: RollupWindow): RollupWindow[] {
+  const chunks: RollupWindow[] = [];
+  const end = new Date(`${window.to}T00:00:00Z`);
+  let cursor = new Date(`${window.from}T00:00:00Z`);
+
+  // Bounded rather than `while (cursor <= end)`: a reversed or malformed
+  // window must not spin here, and 600 months is well past any real history.
+  for (let i = 0; i < 600 && cursor <= end; i += 1) {
+    const monthEnd = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0));
+    const to = monthEnd < end ? monthEnd : end;
+    chunks.push({ from: isoDate(cursor), to: isoDate(to) });
+    cursor = new Date(to.getTime() + 86_400_000);
+  }
+  return chunks;
 }
 
 /** `YYYY-MM-DD` in UTC — the window is deliberately generous at both ends. */

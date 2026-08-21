@@ -38,6 +38,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM payments WHERE store_id = ${STORE}`;
@@ -63,6 +64,7 @@ async function seed(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM payments WHERE store_id = ${STORE}`;
@@ -427,6 +429,7 @@ describe("what sold most", () => {
     const b = await order({ placedAt: "2026-03-05T18:00:00Z" });
     await line(b, { variantId: sourdough, name: "Sourdough", sku: "SD-1", qty: 1, unit: 500 });
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     const top = await reports.topProducts(STORE, WINDOW);
 
     expect(top).toHaveLength(2);
@@ -444,6 +447,7 @@ describe("what sold most", () => {
     const cancelled = await order({ placedAt: "2026-03-06T18:00:00Z", status: "CANCELLED" });
     await line(cancelled, { variantId: v, name: "Sourdough", qty: 99, unit: 500 });
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     expect(await reports.topProducts(STORE, WINDOW)).toHaveLength(0);
   });
 
@@ -455,6 +459,7 @@ describe("what sold most", () => {
     const id = await order({ placedAt: "2026-03-07T18:00:00Z", status: "REFUNDED" });
     await line(id, { variantId: v, name: "Sourdough", qty: 4, unit: 500 });
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     expect(await reports.topProducts(STORE, WINDOW)).toMatchObject([
       { units: 4, revenueCents: 2000 },
     ]);
@@ -471,6 +476,7 @@ describe("what sold most", () => {
       STORE,
     );
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     const top = await reports.topProducts(STORE, WINDOW);
     expect(top[0]!.name).toBe("Sourdough (old recipe)");
   });
@@ -479,6 +485,7 @@ describe("what sold most", () => {
     const id = await order({ placedAt: "2026-03-09T18:00:00Z" });
     await line(id, { variantId: null, name: "Counter special", qty: 2, unit: 250 });
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     expect(await reports.topProducts(STORE, WINDOW)).toMatchObject([
       { variantId: null, name: "Counter special", units: 2 },
     ]);
@@ -492,15 +499,67 @@ describe("what sold most", () => {
     const outside = await order({ placedAt: "2026-04-10T18:00:00Z" });
     await line(outside, { variantId: b, name: "Outside", qty: 50, unit: 900 });
 
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     expect((await reports.topProducts(STORE, WINDOW)).map((t) => t.name)).toEqual(["Inside"]);
   });
 
-  it("refuses a window longer than it can answer inside the target", async () => {
-    // A measured ceiling, not a preference: past a quarter the query exceeds
-    // the 2s p95 target at load. Better to say so than to be slow.
-    await expect(
-      reports.topProducts(STORE, { from: "2025-03-01", to: "2026-03-31" }),
-    ).rejects.toMatchObject({ status: 400 });
+  it("answers a window longer than a quarter, now that it reads the rollup", async () => {
+    // The 92-day cap existed because the live query fell out of budget past
+    // it. Off the rollup the cost is days, not orders, so it is gone.
+    const v = await variant("Sourdough", 500);
+    const id = await order({ placedAt: "2026-03-12T18:00:00Z" });
+    await line(id, { variantId: v, name: "Sourdough", qty: 1, unit: 500 });
+    await rollup.recomputeStoreProducts(STORE, { from: "2025-03-01", to: "2026-03-31" });
+
+    const top = await reports.topProducts(STORE, { from: "2025-03-01", to: "2026-03-31" });
+    expect(top).toMatchObject([{ name: "Sourdough", units: 1 }]);
+  });
+
+  it("does not double-count when the window is rebuilt", async () => {
+    const v = await variant("Sourdough", 500);
+    const id = await order({ placedAt: "2026-03-13T18:00:00Z" });
+    await line(id, { variantId: v, name: "Sourdough", qty: 2, unit: 500 });
+
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+
+    expect(await reports.topProducts(STORE, WINDOW)).toMatchObject([{ units: 2 }]);
+  });
+
+  it("drops a line whose order stopped being trade", async () => {
+    // A day here is many rows, so an upsert alone would leave the old one
+    // behind — still counted, with nothing to overwrite it.
+    const v = await variant("Sourdough", 500);
+    // CONFIRMED, because the state machine refuses DELIVERED -> CANCELLED:
+    // a parcel that has been handed over cannot be un-sold, which is the
+    // trigger doing its job.
+    const id = await order({ placedAt: "2026-03-14T18:00:00Z", status: "CONFIRMED" });
+    await line(id, { variantId: v, name: "Sourdough", qty: 3, unit: 500 });
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+    expect(await reports.topProducts(STORE, WINDOW)).toHaveLength(1);
+
+    await admin.$executeRawUnsafe(
+      `UPDATE orders SET status = 'CANCELLED'::"OrderStatus" WHERE id = $1`,
+      id,
+    );
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+
+    expect(await reports.topProducts(STORE, WINDOW)).toHaveLength(0);
+  });
+
+  it("shows the most recent name when a line was renamed mid-window", async () => {
+    const v = await variant("Sourdough", 500);
+    const early = await order({ placedAt: "2026-03-15T18:00:00Z" });
+    await line(early, { variantId: v, name: "Sourdough", qty: 1, unit: 500 });
+    const late = await order({ placedAt: "2026-03-20T18:00:00Z" });
+    await line(late, { variantId: v, name: "Sourdough (new recipe)", qty: 1, unit: 500 });
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
+
+    const top = await reports.topProducts(STORE, WINDOW);
+    // One line, both sales, called what it is called now.
+    expect(top).toHaveLength(1);
+    expect(top[0]).toMatchObject({ name: "Sourdough (new recipe)", units: 2 });
   });
 
   it("honours the limit", async () => {
@@ -509,6 +568,7 @@ describe("what sold most", () => {
       const id = await order({ placedAt: "2026-03-11T18:00:00Z" });
       await line(id, { variantId: v, name: `P${i}`, qty: 1, unit: 100 * (i + 1) });
     }
+    await rollup.recomputeStoreProducts(STORE, WINDOW);
     expect(await reports.topProducts(STORE, { ...WINDOW, limit: 3 })).toHaveLength(3);
   });
 });
