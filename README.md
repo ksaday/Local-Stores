@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
-accessibility work done; the worker, the outbox and billing are in.** 570 tests
+accessibility work done; the worker, the outbox and billing are in.** 574 tests
 passing. A shop can list products, take an order online or over the counter,
 work the queue, take cash or card, refund, print a receipt, run a promotion,
 send a parcel out with a driver, get a photograph and a signature back, be
@@ -47,6 +47,13 @@ validation, AsyncLocalStorage request context.
 **Tenancy** — PostgreSQL RLS on every table, enforced through a per-request
 transaction context. The cross-tenant isolation suite runs as the restricted
 `bba_app` role and is the release gate.
+
+A shop can read its own staff *and its own customers* — the second half was
+missing until migration 25, and the symptom was the order queue rendering every
+account order as "Guest" because the `users` join silently returned nothing.
+RLS filters rows rather than raising, so it failed quietly for as long as it
+existed. Write access was not widened: a shop still cannot edit somebody's
+account.
 
 **Auth** — argon2id, EdDSA access tokens with membership claims, refresh
 rotation with family-wide revocation on replay, email verification, password

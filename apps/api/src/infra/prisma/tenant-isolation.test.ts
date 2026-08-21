@@ -30,6 +30,10 @@ const STORE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const STORE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const OWNER_A = "11111111-1111-1111-1111-111111111111";
 const OWNER_B = "22222222-2222-2222-2222-222222222222";
+/** Has ordered from store B, and from nowhere else. */
+const CUSTOMER_B = "33333333-3333-3333-3333-333333333333";
+/** Has never ordered from anybody. */
+const STRANGER = "44444444-4444-4444-4444-444444444444";
 
 const scopedToA = { userId: OWNER_A, storeId: STORE_A, isSuperAdmin: false } as const;
 
@@ -61,6 +65,19 @@ beforeAll(async () => {
       INSERT INTO store_memberships (id,store_id,user_id,role,status,created_at,updated_at)
       VALUES (gen_random_uuid(),${storeId},${userId},'STORE_ADMIN','ACTIVE',now(),now())`;
   }
+
+  // A shopper who has ordered from store B and nowhere else, and a stranger
+  // who has never ordered at all. The customer-visibility tests below need
+  // both to mean anything.
+  await admin.$executeRaw`
+    INSERT INTO users (id,email,name,status,created_at,updated_at) VALUES
+    (${CUSTOMER_B},'isolation-shopper@example.com'::citext,'Shopper B','ACTIVE',now(),now()),
+    (${STRANGER},'isolation-stranger@example.com'::citext,'Stranger','ACTIVE',now(),now())`;
+  await admin.$executeRaw`
+    INSERT INTO orders (id,store_id,order_number,fulfillment,status,customer_id,
+                        subtotal_cents,total_cents,currency,placed_at,created_at,updated_at)
+    VALUES (gen_random_uuid(),${STORE_B},'ISO-CUST','PICKUP','DELIVERED',${CUSTOMER_B},
+            500,500,'USD',now(),now(),now())`;
 });
 
 afterAll(async () => {
@@ -83,7 +100,7 @@ async function teardown(): Promise<void> {
   await admin.$executeRaw`DELETE FROM count_sessions WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM billing_notifications WHERE store_id = ANY(${stores})`;
   await admin.$executeRaw`DELETE FROM stores WHERE id = ANY(${stores})`;
-  await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${[OWNER_A, OWNER_B]})`;
+  await admin.$executeRaw`DELETE FROM users WHERE id = ANY(${[OWNER_A, OWNER_B, CUSTOMER_B, STRANGER]})`;
 }
 
 describe("cross-tenant isolation (RLS)", () => {
@@ -174,6 +191,56 @@ describe("cross-tenant isolation (RLS)", () => {
 
     expect(wrongKey).toHaveLength(0);
     expect(rightKey).toHaveLength(1);
+  });
+
+  it("lets a store read a customer who has ordered from it", async () => {
+    // The policy exists so the order queue can say who placed an order. Before
+    // migration 25 this returned nothing and every account order rendered as
+    // "Guest" — a shop could not tell a regular from a walk-in.
+    const rows = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.user.findMany({ where: { id: CUSTOMER_B }, select: { name: true } }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.name).toBe("Shopper B");
+  });
+
+  it("hides another store's customer", async () => {
+    // The whole risk of widening `users_read`: it must admit a shop to its own
+    // customers and not to everybody's.
+    const rows = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.user.findMany({ where: { id: CUSTOMER_B } }),
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("hides somebody who has never ordered from anyone", async () => {
+    const fromA = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.user.findMany({ where: { id: STRANGER } }),
+    );
+    const fromB = await withTenantContext(
+      prisma,
+      { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+      (tx) => tx.user.findMany({ where: { id: STRANGER } }),
+    );
+    expect(fromA).toHaveLength(0);
+    expect(fromB).toHaveLength(0);
+  });
+
+  it("still refuses to let a store edit a customer it can now read", async () => {
+    // Read was widened; write was not.
+    await expect(
+      withTenantContext(
+        prisma,
+        { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+        (tx) => tx.user.update({ where: { id: CUSTOMER_B }, data: { name: "Renamed" } }),
+      ),
+    ).rejects.toThrow();
+
+    const [row] = await admin.$queryRaw<{ name: string }[]>`
+      SELECT name FROM users WHERE id = ${CUSTOMER_B}`;
+    expect(row!.name).toBe("Shopper B");
   });
 
   it("hides one store's orders from another store", async () => {
