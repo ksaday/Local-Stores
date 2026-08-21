@@ -4,7 +4,15 @@ import { api, ApiError } from "@/lib/api";
 import { Card } from "@/components/shell";
 import type { Store } from "@/lib/types";
 import { SalesChart } from "./sales-chart";
-import { RANGES, densify, isRangeKey, type RangeKey, type SalesReport } from "./types";
+import {
+  MAX_PRODUCT_DAYS,
+  RANGES,
+  densify,
+  isRangeKey,
+  type ProductSales,
+  type RangeKey,
+  type SalesReport,
+} from "./types";
 
 export const metadata: Metadata = { title: "Reports" };
 
@@ -24,7 +32,9 @@ export default async function ReportsPage({
   const from = new Date(to.getTime() - (days - 1) * 86_400_000);
   const query = `from=${iso(from)}&to=${iso(to)}&grain=${grain}`;
 
-  const [store, report] = await Promise.all([
+  const wantsProducts = days <= MAX_PRODUCT_DAYS;
+
+  const [store, report, products] = await Promise.all([
     api<Store>(`/stores/${storeId}`),
     api<SalesReport>(`/stores/${storeId}/reports/sales?${query}`).catch((err) => {
       // A cashier with no `reports:sales` reaches the page through the nav
@@ -33,6 +43,14 @@ export default async function ReportsPage({
       if (err instanceof ApiError && err.status === 403) return null;
       throw err;
     }),
+    wantsProducts
+      ? api<ProductSales[]>(`/stores/${storeId}/reports/top-products?${query.replace(/&grain=\w+/, "")}&limit=10`).catch(
+          (err) => {
+            if (err instanceof ApiError && err.status === 403) return null;
+            throw err;
+          },
+        )
+      : Promise.resolve(null),
   ]);
 
   if (!report) {
@@ -48,7 +66,11 @@ export default async function ReportsPage({
 
   const currency = store.currency ?? "USD";
   const { totals } = report;
-  const tradingDays = report.points.filter((p) => p.ordersCount > 0).length;
+  // Periods with trade, named by the grain they actually are. Counting
+  // week-grain points and calling them "trading days" reported a busy quarter
+  // as fourteen days of trade.
+  const activePeriods = report.points.filter((p) => p.ordersCount > 0).length;
+  const periodNoun = report.grain === "day" ? "day" : report.grain;
   const average = totals.ordersCount > 0 ? Math.round(totals.netCents / totals.ordersCount) : 0;
 
   return (
@@ -78,7 +100,7 @@ export default async function ReportsPage({
           chart is the number with extra steps. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Takings" value={money(totals.netCents, currency)} hint="after discounts and refunds" />
-        <Stat label="Orders" value={totals.ordersCount.toLocaleString()} hint={`over ${tradingDays} trading ${tradingDays === 1 ? "day" : "days"}`} />
+        <Stat label="Orders" value={totals.ordersCount.toLocaleString()} hint={`over ${activePeriods} ${periodNoun}${activePeriods === 1 ? "" : "s"} of trade`} />
         <Stat label="Average order" value={money(average, currency)} />
         <Stat
           label="Refunded"
@@ -99,6 +121,57 @@ export default async function ReportsPage({
             currency={currency}
             grain={report.grain}
           />
+        )}
+      </Card>
+
+      <Card
+        title="Best sellers"
+        description={
+          wantsProducts
+            ? "By revenue, over the selected period."
+            : "Available for up to three months at a time."
+        }
+      >
+        {!wantsProducts ? (
+          <p className="text-sm text-ink-muted">
+            Pick 90 days or less to see which lines are selling.
+          </p>
+        ) : !products || products.length === 0 ? (
+          <p className="text-sm text-ink-muted">Nothing sold in this period yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[32rem] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-line text-left">
+                  <th scope="col" className="py-2 pr-4 font-medium text-ink">
+                    Product
+                  </th>
+                  <Th>Units</Th>
+                  <Th>Revenue</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((p) => (
+                  <tr
+                    key={p.variantId ?? p.name}
+                    className="border-b border-line last:border-0"
+                  >
+                    <th scope="row" className="py-2 pr-4 text-left font-normal text-ink">
+                      {p.name}
+                      {p.sku && <span className="ml-2 text-ink-muted">{p.sku}</span>}
+                    </th>
+                    <Td>{p.units.toLocaleString()}</Td>
+                    <Td>{money(p.revenueCents, currency)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-4 text-sm text-ink-muted">
+              Counted as sold when the order was placed. A refund is not attributed to a
+              line, so it does not come off these figures — the takings above are net of
+              them.
+            </p>
+          </div>
         )}
       </Card>
 

@@ -26,6 +26,8 @@ const args = new Map(
 
 const ORDERS = Number(args.get("orders") ?? 1_000_000);
 const YEARS = Number(args.get("years") ?? 3);
+/** Catalog size. Enough for a long tail; a shop with ten lines ranks itself. */
+const PRODUCTS = Number(args.get("products") ?? 200);
 /** Big enough that the per-statement overhead disappears, small enough to watch. */
 const BATCH = 50_000;
 
@@ -58,7 +60,10 @@ async function main() {
     `DELETE FROM refunds WHERE store_id = '${STORE_ID}'`,
   );
   await prisma.$executeRawUnsafe(`DELETE FROM payments WHERE store_id = '${STORE_ID}'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM order_items WHERE store_id = '${STORE_ID}'`);
   await prisma.$executeRawUnsafe(`DELETE FROM orders WHERE store_id = '${STORE_ID}'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM product_variants WHERE store_id = '${STORE_ID}'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM products WHERE store_id = '${STORE_ID}'`);
 
   for (let offset = 0; offset < ORDERS; offset += BATCH) {
     const count = Math.min(BATCH, ORDERS - offset);
@@ -116,6 +121,68 @@ async function main() {
   }
   console.log();
 
+  // A catalog, and a line or three on every order.
+  //
+  // Without these the orders are headers with nothing in them, and any question
+  // about *what* sold has nothing to read. The product report would then be
+  // measured against an empty table and look instant.
+  //
+  // Deliberately a long tail rather than a flat spread: real shops have a few
+  // lines that carry the week and a hundred that barely move, and a top-sellers
+  // query over a uniform catalog does not have to rank anything.
+  console.log(`Adding a ${PRODUCTS}-product catalog and order lines…`);
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO products (id, store_id, name, slug, status, created_at, updated_at)
+    SELECT gen_random_uuid()::text, '${STORE_ID}', 'Load Product ' || g,
+           'load-product-' || g, 'ACTIVE'::"ProductStatus", now(), now()
+    FROM generate_series(1, ${PRODUCTS}) g`);
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO product_variants (id, product_id, store_id, sku, attrs, price_cents,
+                                  is_default, active, created_at, updated_at)
+    SELECT gen_random_uuid()::text, p.id, '${STORE_ID}', 'LOAD-SKU-' || p.slug,
+           '{}'::jsonb, (300 + floor(random() * 4700))::int, true, true, now(), now()
+    FROM products p WHERE p.store_id = '${STORE_ID}'`);
+
+  const variants = await prisma.$queryRawUnsafe<{ id: string; name: string; price: number }[]>(
+    `SELECT v.id, p.name, v.price_cents AS price
+     FROM product_variants v JOIN products p ON p.id = v.product_id
+     WHERE v.store_id = '${STORE_ID}' ORDER BY p.slug`,
+  );
+
+  // Zipf-ish weighting: variant 1 is picked far more often than variant 200,
+  // so the report has a real ranking to find rather than noise.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO order_items (id, order_id, store_id, variant_id, product_name, variant_attrs,
+                             sku, unit_price_cents, qty, line_total_cents, tax_cents)
+    SELECT gen_random_uuid()::text, li.order_id, '${STORE_ID}', v.id, v.name, '{}'::jsonb,
+           'LOAD-SKU-' || v.slug, v.price_cents, li.qty,
+           v.price_cents * li.qty, 0
+    FROM (
+      SELECT o.id AS order_id,
+             1 + floor(random() * 3)::int AS qty,
+             -- Squaring a uniform draw biases hard towards the low indexes.
+             1 + floor(power(random(), 2) * ${PRODUCTS})::int AS pick
+      FROM orders o
+      CROSS JOIN generate_series(1, 3) line
+      WHERE o.store_id = '${STORE_ID}'
+        AND random() < 0.7
+    ) li
+    JOIN (
+      SELECT v.id, v.price_cents, p.name, p.slug,
+             row_number() OVER (ORDER BY p.slug) AS n
+      FROM product_variants v JOIN products p ON p.id = v.product_id
+      WHERE v.store_id = '${STORE_ID}'
+    ) v ON v.n = li.pick`);
+
+  const [lineCount] = await prisma.$queryRawUnsafe<{ count: bigint }[]>(
+    `SELECT count(*) FROM order_items WHERE store_id = '${STORE_ID}'`,
+  );
+  console.log(
+    `  ${Number(lineCount?.count ?? 0).toLocaleString()} lines across ${variants.length} variants`,
+  );
+
   // Refunds need a payment to hang from, so a slice of the orders get one.
   // Enough to make the refund join do real work without doubling the seed.
   const refundable = Math.max(1, Math.floor(ORDERS * 0.02));
@@ -144,7 +211,18 @@ async function main() {
     FROM payments p
     WHERE p.store_id = '${STORE_ID}'`);
 
+  // Let the dev owner into this store, so the reporting screens can be looked
+  // at against a realistic volume rather than five hand-made orders. Without
+  // it the fixture is measurable but not viewable, and half of what it is for
+  // is seeing whether a chart of three years still reads.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO store_memberships (id, store_id, user_id, role, status, created_at, updated_at)
+    SELECT gen_random_uuid()::text, '${STORE_ID}', u.id, 'STORE_ADMIN', 'ACTIVE', now(), now()
+    FROM users u WHERE u.email = 'owner@morseavebakery.test'::citext
+    ON CONFLICT DO NOTHING`);
+
   await prisma.$executeRawUnsafe(`ANALYZE orders`);
+  await prisma.$executeRawUnsafe(`ANALYZE order_items`);
   await prisma.$executeRawUnsafe(`ANALYZE refunds`);
 
   const rows = await prisma.$queryRawUnsafe<{ count: bigint }[]>(

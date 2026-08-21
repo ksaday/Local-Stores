@@ -12,6 +12,15 @@ const SalesQuerySchema = z
   })
   .strict();
 
+const TopProductsQuerySchema = z
+  .object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
+    // Coerced, because everything in a query string arrives as a string.
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+
 /**
  * Store reports (plan Phase 10).
  *
@@ -30,5 +39,14 @@ export class ReportsController {
     @Query(zodQuery(SalesQuerySchema)) query: z.infer<typeof SalesQuerySchema>,
   ) {
     return this.reports.sales(storeId, query);
+  }
+
+  @Get("top-products")
+  @RequirePermission("reports:sales")
+  topProducts(
+    @Param("storeId") storeId: string,
+    @Query(zodQuery(TopProductsQuerySchema)) query: z.infer<typeof TopProductsQuerySchema>,
+  ) {
+    return this.reports.topProducts(storeId, query);
   }
 }

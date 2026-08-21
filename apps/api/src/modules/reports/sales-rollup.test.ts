@@ -41,7 +41,10 @@ beforeEach(async () => {
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM payments WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM order_items WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM products WHERE store_id = ${STORE}`;
 });
 
 async function seed(): Promise<void> {
@@ -63,7 +66,10 @@ async function cleanup(): Promise<void> {
   await admin.$executeRaw`DELETE FROM daily_store_sales WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM refunds WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM payments WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM order_items WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM orders WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM product_variants WHERE store_id = ${STORE}`;
+  await admin.$executeRaw`DELETE FROM products WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM stores WHERE id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM users WHERE id = ${OWNER}`;
 }
@@ -119,6 +125,57 @@ async function refund(orderId: string, amount: number, createdAt: string): Promi
     amount,
     createdAt,
   );
+}
+
+async function line(
+  orderId: string,
+  input: { variantId?: string | null; name: string; sku?: string; qty: number; unit: number },
+): Promise<void> {
+  await admin.$executeRawUnsafe(
+    `INSERT INTO order_items (id,order_id,store_id,variant_id,product_name,variant_attrs,
+       sku,unit_price_cents,qty,line_total_cents,tax_cents)
+     VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6,$7,$8,$9,0)`,
+    randomUUID(),
+    orderId,
+    STORE,
+    input.variantId ?? null,
+    input.name,
+    input.sku ?? null,
+    input.unit,
+    input.qty,
+    input.unit * input.qty,
+  );
+}
+
+/**
+ * A real product and variant, because `order_items.variant_id` is a foreign
+ * key — an invented id fails the constraint rather than standing in for a
+ * deleted line. Variants are soft-deleted (`deleted_at`), so the reference
+ * stays valid for the life of the order anyway; a NULL variant is the ad-hoc
+ * line a POS sale can carry, not a deleted one.
+ */
+async function variant(name: string, price: number): Promise<string> {
+  const productId = randomUUID();
+  const variantId = randomUUID();
+  await admin.$executeRawUnsafe(
+    `INSERT INTO products (id,store_id,name,slug,status,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'ACTIVE'::"ProductStatus",now(),now())`,
+    productId,
+    STORE,
+    name,
+    `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${productId.slice(0, 6)}`,
+  );
+  await admin.$executeRawUnsafe(
+    `INSERT INTO product_variants (id,product_id,store_id,sku,attrs,price_cents,
+       is_default,active,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'{}'::jsonb,$5,true,true,now(),now())`,
+    variantId,
+    productId,
+    STORE,
+    `SKU-${variantId.slice(0, 6)}`,
+    price,
+  );
+  return variantId;
 }
 
 const WINDOW = { from: "2026-03-01", to: "2026-03-31" };
@@ -355,5 +412,103 @@ describe("reading the report", () => {
     await expect(
       reports.sales(STORE, { from: "2026-03-31", to: "2026-03-01" }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("what sold most", () => {
+  it("ranks by revenue and counts units and orders", async () => {
+    const sourdough = await variant("Sourdough", 500);
+    const brownie = await variant("Brownie", 300);
+
+    const a = await order({ placedAt: "2026-03-04T18:00:00Z" });
+    await line(a, { variantId: sourdough, name: "Sourdough", sku: "SD-1", qty: 2, unit: 500 });
+    await line(a, { variantId: brownie, name: "Brownie", sku: "BR-1", qty: 1, unit: 300 });
+
+    const b = await order({ placedAt: "2026-03-05T18:00:00Z" });
+    await line(b, { variantId: sourdough, name: "Sourdough", sku: "SD-1", qty: 1, unit: 500 });
+
+    const top = await reports.topProducts(STORE, WINDOW);
+
+    expect(top).toHaveLength(2);
+    expect(top[0]).toMatchObject({
+      name: "Sourdough",
+      sku: "SD-1",
+      units: 3,
+      revenueCents: 1500,
+    });
+    expect(top[1]).toMatchObject({ name: "Brownie", units: 1, revenueCents: 300 });
+  });
+
+  it("ignores lines on orders that never became trade", async () => {
+    const v = await variant("Sourdough", 500);
+    const cancelled = await order({ placedAt: "2026-03-06T18:00:00Z", status: "CANCELLED" });
+    await line(cancelled, { variantId: v, name: "Sourdough", qty: 99, unit: 500 });
+
+    expect(await reports.topProducts(STORE, WINDOW)).toHaveLength(0);
+  });
+
+  it("counts a refunded sale, because a refund names no line", async () => {
+    // Refunds are recorded against a payment, so there is no honest way to say
+    // which item came back. This report answers what left the shelves; the
+    // takings report answers what the shop kept.
+    const v = await variant("Sourdough", 500);
+    const id = await order({ placedAt: "2026-03-07T18:00:00Z", status: "REFUNDED" });
+    await line(id, { variantId: v, name: "Sourdough", qty: 4, unit: 500 });
+
+    expect(await reports.topProducts(STORE, WINDOW)).toMatchObject([
+      { units: 4, revenueCents: 2000 },
+    ]);
+  });
+
+  it("keeps the name the customer was sold, not the catalog's current one", async () => {
+    const v = await variant("Sourdough", 500);
+    const id = await order({ placedAt: "2026-03-08T18:00:00Z" });
+    await line(id, { variantId: v, name: "Sourdough (old recipe)", qty: 1, unit: 500 });
+
+    // The line is a snapshot: renaming the product must not rewrite history.
+    await admin.$executeRawUnsafe(
+      `UPDATE products SET name = 'Sourdough (new recipe)' WHERE store_id = $1`,
+      STORE,
+    );
+
+    const top = await reports.topProducts(STORE, WINDOW);
+    expect(top[0]!.name).toBe("Sourdough (old recipe)");
+  });
+
+  it("keeps an ad-hoc line that names no variant at all", async () => {
+    const id = await order({ placedAt: "2026-03-09T18:00:00Z" });
+    await line(id, { variantId: null, name: "Counter special", qty: 2, unit: 250 });
+
+    expect(await reports.topProducts(STORE, WINDOW)).toMatchObject([
+      { variantId: null, name: "Counter special", units: 2 },
+    ]);
+  });
+
+  it("leaves out anything outside the window", async () => {
+    const a = await variant("Inside", 100);
+    const b = await variant("Outside", 900);
+    const inside = await order({ placedAt: "2026-03-10T18:00:00Z" });
+    await line(inside, { variantId: a, name: "Inside", qty: 1, unit: 100 });
+    const outside = await order({ placedAt: "2026-04-10T18:00:00Z" });
+    await line(outside, { variantId: b, name: "Outside", qty: 50, unit: 900 });
+
+    expect((await reports.topProducts(STORE, WINDOW)).map((t) => t.name)).toEqual(["Inside"]);
+  });
+
+  it("refuses a window longer than it can answer inside the target", async () => {
+    // A measured ceiling, not a preference: past a quarter the query exceeds
+    // the 2s p95 target at load. Better to say so than to be slow.
+    await expect(
+      reports.topProducts(STORE, { from: "2025-03-01", to: "2026-03-31" }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("honours the limit", async () => {
+    for (let i = 0; i < 5; i += 1) {
+      const v = await variant(`P${i}`, 100 * (i + 1));
+      const id = await order({ placedAt: "2026-03-11T18:00:00Z" });
+      await line(id, { variantId: v, name: `P${i}`, qty: 1, unit: 100 * (i + 1) });
+    }
+    expect(await reports.topProducts(STORE, { ...WINDOW, limit: 3 })).toHaveLength(3);
   });
 });

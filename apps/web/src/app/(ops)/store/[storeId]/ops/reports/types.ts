@@ -35,6 +35,21 @@ export const RANGES = {
 
 export type RangeKey = keyof typeof RANGES;
 
+/**
+ * Best sellers are answered for up to a quarter — see `topProducts` in the API
+ * for the measurement behind that. The page asks only when it will get an
+ * answer, rather than showing an error where a panel should be.
+ */
+export const MAX_PRODUCT_DAYS = 92;
+
+export interface ProductSales {
+  variantId: string | null;
+  name: string;
+  sku: string | null;
+  units: number;
+  revenueCents: number;
+}
+
 export function isRangeKey(v: string | undefined): v is RangeKey {
   return v !== undefined && v in RANGES;
 }
