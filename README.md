@@ -159,9 +159,11 @@ number as a `tel:` link and the address as a maps link, and the previous failure
 shown before setting off. Reporting a failure is one tap from the card rather
 than a menu, because a driver doing it is standing in the rain.
 
-**Proof of delivery** — the driver photographs where they left the parcel, and
-the shop sees the photograph on the order. It is the answer to "it never
-arrived", which is otherwise one person's word against another's.
+**Proof of delivery** — the driver photographs where they left the parcel and,
+if somebody is in, has them sign for it; the shop sees both on the order. It is
+the answer to "it never arrived", which is otherwise one person's word against
+another's. Both are optional: a driver at a door with no answer still has to be
+able to say what happened.
 
 The photograph is uploaded when it is taken rather than when the delivery is
 completed, so the seconds it costs are spent walking back to the van instead of
@@ -169,6 +171,15 @@ in front of a button somebody is waiting on. The preview is the local file,
 shown the instant the camera closes — but "saved" is said separately, because "I
 can see it" and "the shop can see it" are different facts and only one survives
 a lost signal.
+
+The signature deliberately does not behave that way. A photo is taken once and
+is either right or wrong; a signature is drawn, looked at, and often redone. So
+nothing is uploaded until the driver commits to it, and undo drops the last
+stroke rather than the lot — the usual mistake is one bad line, not a bad
+signature. The strokes and not the pixels are the state, which is what lets
+undo and a rotated phone both repaint a picture that was never on screen in
+that form. It is exported on an opaque white ground: a transparent signature is
+invisible ink the first time somebody opens it in dark mode.
 
 Proofs live under the private prefix and are read only through a URL that
 carries its own signature and expires in ten minutes, because the reader is an
@@ -626,12 +637,9 @@ which is the failure mode where a green build breaks on someone's machine.
 
 ## Next steps (in order)
 
-1. **Signature capture** — the remaining half of proof (§Phase 9). A canvas
-   rather than a camera, but the same upload path and the same private prefix,
-   so what is left is the drawing surface and undoing a bad stroke.
-2. **Reporting and dashboards** (Phase 10) — the sales, inventory and platform
+1. **Reporting and dashboards** (Phase 10) — the sales, inventory and platform
    figures every screen currently implies but nothing computes.
-3. **Phases 11–12**: hardening, then deployment.
+2. **Phases 11–12**: hardening, then deployment.
 
 Deliberately not next: the offline queue with Background Sync for driver
 updates (§11.8). It is worth building, and it is worth building against a real
