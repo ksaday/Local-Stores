@@ -150,12 +150,32 @@ export class AuthService {
   }
 
   /**
-   * Issues a session directly, bypassing the password step. Used by OAuth,
-   * where the provider has already authenticated the user, and by invitation
-   * acceptance.
+   * Issues a session directly, bypassing the password step. Used by invitation
+   * acceptance, where the emailed token is itself the proof of identity.
    */
   async issueSessionFor(userId: string, device: DeviceInfo): Promise<IssuedSession> {
     return this.issueSession(userId, randomUUID(), device);
+  }
+
+  /**
+   * Finishes a sign-in that an identity provider has already authenticated
+   * (FR-AUTH-07), stopping at the second factor when the account has one.
+   *
+   * Google having authenticated the user says nothing about *our* second
+   * factor. Skipping it here would mean anyone who compromised the Google
+   * account walked past a TOTP the owner deliberately turned on — and would
+   * make "link Google" a way to quietly downgrade an account's protection.
+   * So provider sign-in lands in the same place a password does.
+   */
+  async completeProviderSignIn(userId: string, device: DeviceInfo): Promise<LoginOutcome> {
+    await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.user.update({ where: { id: userId }, data: { lastLoginAt: new Date() } }),
+    );
+
+    if (await this.mfa.isEnabled(userId)) {
+      return { kind: "mfa_required", challengeToken: await this.tokens.issueMfaChallenge(userId) };
+    }
+    return { kind: "session", session: await this.issueSession(userId, randomUUID(), device) };
   }
 
   /**

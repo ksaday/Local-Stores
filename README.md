@@ -50,7 +50,9 @@ transaction context. The cross-tenant isolation suite runs as the restricted
 **Auth** — argon2id, EdDSA access tokens with membership claims, refresh
 rotation with family-wide revocation on replay, email verification, password
 reset, staff invitations, session management, TOTP MFA with recovery codes,
-Google OAuth account linking.
+Google sign-in (authorisation-code flow with PKCE and a signed one-time state,
+landing on the same MFA step a password does) with account linking gated on a
+provider-verified address.
 
 **Authorization** — three guards registered globally so routes are protected by
 default. Store-scoped permissions resolve from membership + guardrailed
@@ -337,9 +339,6 @@ coupon management and the CSV tools.
   to be run once against live keys before anyone is charged for real.
 - Phases 6 and 9–12: the rest of inventory, delivery, reporting, hardening,
   deployment
-- OAuth HTTP handshake (the Google redirect/callback glue). The account-linking
-  logic underneath it is built and tested; only the provider round-trip is
-  missing, and it needs real Google credentials to exercise.
 
 ## Things worth knowing before you change anything
 
@@ -510,6 +509,26 @@ npm install
 cd apps/api && cp .env.example .env && npx prisma generate && npx prisma migrate deploy
 ```
 
+### Google sign-in (optional)
+
+Leave `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` unset and the button is
+simply not offered; everything else works unchanged.
+
+To turn it on, create an OAuth 2.0 Client ID (type: Web application) in the
+[Google Cloud Console](https://console.cloud.google.com) and register exactly
+this authorised redirect URI:
+
+```
+http://localhost:3100/auth/oauth/google/callback
+```
+
+That is the **web** origin, not the API's. Google redirects the browser, the
+browser only ever talks to the Next.js BFF, and the BFF forwards the code to
+the API — so the client secret lives in `apps/api/.env` and never reaches the
+browser. A mismatch here is the usual reason a working setup breaks in a new
+environment: Google compares the value byte for byte, and the port is easy to
+get wrong.
+
 Seed a themed store with a catalog, tax rate, delivery zone, stock and a
 staff login, so both the storefront and the order queue have something real to
 work with. It prints the URLs and the sign-in it created:
@@ -612,9 +631,7 @@ which is the failure mode where a green build breaks on someone's machine.
    so what is left is the drawing surface and undoing a bad stroke.
 2. **Reporting and dashboards** (Phase 10) — the sales, inventory and platform
    figures every screen currently implies but nothing computes.
-3. **OAuth HTTP handshake** — the Google redirect and callback, wired to the
-   already-tested linking logic. Needs real Google credentials.
-4. **Phases 11–12**: hardening, then deployment.
+3. **Phases 11–12**: hardening, then deployment.
 
 Deliberately not next: the offline queue with Background Sync for driver
 updates (§11.8). It is worth building, and it is worth building against a real

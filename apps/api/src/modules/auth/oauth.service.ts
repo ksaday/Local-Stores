@@ -1,8 +1,17 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { ConfigService } from "@nestjs/config";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
+import type { Env } from "../../config/env.js";
 import { AuthRepository } from "./auth.repository.js";
+
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+
+/** Provider calls get a hard ceiling: a hung Google must not hang a sign-in. */
+const PROVIDER_TIMEOUT_MS = 10_000;
 
 /**
  * A profile as returned by an identity provider, normalised.
@@ -25,7 +34,156 @@ export class OAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repo: AuthRepository,
+    private readonly config: ConfigService<Env, true>,
   ) {}
+
+  /**
+   * Whether Google sign-in is configured at all.
+   *
+   * Checked before the button is offered rather than after it is pressed: an
+   * install with no credentials is a normal install, and password sign-in works
+   * exactly as before. Offering a button that can only fail is worse than not
+   * offering one.
+   */
+  isGoogleConfigured(): boolean {
+    return Boolean(this.googleClientId() && this.googleClientSecret());
+  }
+
+  /**
+   * The redirect Google sends the browser back to.
+   *
+   * The *web* origin, not this API's: the browser only ever talks to the
+   * Next.js BFF, which forwards the code here. This value is also what must be
+   * registered in the Google Console — the two are compared byte for byte at
+   * both the authorise and the token-exchange step, so they are built from one
+   * expression rather than written down twice.
+   */
+  googleRedirectUri(): string {
+    return `${this.config.get("WEB_ORIGIN", { infer: true })}/auth/oauth/google/callback`;
+  }
+
+  /**
+   * Step one: where to send the browser, and the secrets to remember while it
+   * is gone.
+   *
+   * PKCE (RFC 7636) is used even though this is a confidential client with a
+   * secret. It costs one hash and closes the window where an authorisation code
+   * leaked from a redirect — browser history, a proxy log, a referrer header —
+   * can be redeemed by anyone but the tab that started the flow.
+   */
+  buildGoogleAuthorization(redirectTo: string): {
+    authorizeUrl: string;
+    nonce: string;
+    codeVerifier: string;
+  } {
+    const clientId = this.googleClientId();
+    if (!clientId) throw AppError.validation("Google sign-in isn't configured.");
+
+    const nonce = randomBytes(32).toString("base64url");
+    const codeVerifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(codeVerifier).digest("base64url");
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: this.googleRedirectUri(),
+      response_type: "code",
+      scope: "openid email profile",
+      state: nonce,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      // Ask every time rather than silently reusing whichever account the
+      // browser happens to be signed into — on a shared machine that is how
+      // one person ends up in another's orders.
+      prompt: "select_account",
+    });
+
+    return { authorizeUrl: `${GOOGLE_AUTH_URL}?${params.toString()}`, nonce, codeVerifier };
+  }
+
+  /**
+   * Step two: redeem the authorisation code for a profile.
+   *
+   * The profile comes from the userinfo endpoint over a fresh TLS connection
+   * rather than by decoding the id_token: both are fine, and this avoids
+   * carrying a JWKS cache for one provider.
+   */
+  async exchangeGoogleCode(code: string, codeVerifier: string): Promise<OAuthProfile> {
+    const clientId = this.googleClientId();
+    const clientSecret = this.googleClientSecret();
+    if (!clientId || !clientSecret) throw AppError.validation("Google sign-in isn't configured.");
+
+    const tokenRes = await this.fetchProvider(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: this.googleRedirectUri(),
+        grant_type: "authorization_code",
+        code_verifier: codeVerifier,
+      }).toString(),
+    });
+
+    if (!tokenRes.ok) {
+      // The body can quote the code and the client_id back at us; it goes to the
+      // log, never to the caller.
+      this.logger.warn(`Google token exchange failed (${tokenRes.status}): ${await safeBody(tokenRes)}`);
+      throw AppError.unauthenticated("That sign-in didn't complete. Please try again.");
+    }
+
+    const token = (await tokenRes.json()) as { access_token?: string };
+    if (!token.access_token) {
+      throw AppError.unauthenticated("That sign-in didn't complete. Please try again.");
+    }
+
+    const profileRes = await this.fetchProvider(GOOGLE_USERINFO_URL, {
+      headers: { authorization: `Bearer ${token.access_token}` },
+    });
+
+    if (!profileRes.ok) {
+      this.logger.warn(`Google userinfo failed (${profileRes.status})`);
+      throw AppError.unauthenticated("That sign-in didn't complete. Please try again.");
+    }
+
+    const profile = (await profileRes.json()) as {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean;
+      name?: string;
+    };
+
+    if (!profile.sub || !profile.email) {
+      throw AppError.unauthenticated("Google didn't return an email address for that account.");
+    }
+
+    return {
+      provider: "GOOGLE",
+      providerUid: profile.sub,
+      email: profile.email,
+      // Absent is not verified. Defaulting the other way would hand the
+      // account-linking decision to a field the provider chose to omit.
+      emailVerified: profile.email_verified === true,
+      name: profile.name,
+    };
+  }
+
+  private googleClientId(): string | undefined {
+    return this.config.get("GOOGLE_CLIENT_ID", { infer: true });
+  }
+
+  private googleClientSecret(): string | undefined {
+    return this.config.get("GOOGLE_CLIENT_SECRET", { infer: true });
+  }
+
+  private async fetchProvider(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
+    } catch (err) {
+      this.logger.warn(`Google request to ${url} failed: ${String(err)}`);
+      throw AppError.unauthenticated("Couldn't reach Google just now. Please try again.");
+    }
+  }
 
   /**
    * Resolve a provider profile to a local user, creating or linking as needed
@@ -172,5 +330,14 @@ export class OAuthService {
         },
       }),
     );
+  }
+}
+
+/** Error bodies are for the log; a failed read of one must not mask the failure. */
+async function safeBody(res: Response): Promise<string> {
+  try {
+    return (await res.text()).slice(0, 500);
+  } catch {
+    return "<unreadable>";
   }
 }

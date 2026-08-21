@@ -40,7 +40,7 @@ beforeAll(async () => {
   repo = new AuthRepository(prisma);
   const mfa = new MfaService(prisma, config as never);
   auth = new AuthService(prisma, repo, passwords, tokens, mfa, config as never);
-  oauth = new OAuthService(prisma, repo);
+  oauth = new OAuthService(prisma, repo, config as never);
 });
 
 afterAll(async () => {

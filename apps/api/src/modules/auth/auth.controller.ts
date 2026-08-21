@@ -1,5 +1,6 @@
-import { Body, Controller, Get, HttpCode, Logger, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Logger, Post, Query, Req, Res } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { timingSafeEqual } from "node:crypto";
 import type { CookieOptions, Response } from "express";
 import { z } from "zod";
 import { Public } from "../../common/decorators/public.decorator.js";
@@ -11,9 +12,13 @@ import type { AuthenticatedRequest } from "../../common/guards/jwt-auth.guard.js
 import type { Env } from "../../config/env.js";
 import { AuthService, type IssuedSession } from "./auth.service.js";
 import { MfaService } from "./mfa.service.js";
+import { OAuthService } from "./oauth.service.js";
+import { TokenService } from "./token.service.js";
 
 const ACCESS_COOKIE = "bba_at";
 const REFRESH_COOKIE = "bba_rt";
+/** Holds the signed state + PKCE verifier while the browser is away at Google. */
+const OAUTH_STATE_COOKIE = "bba_oauth";
 
 // .strict() rejects unexpected keys rather than dropping them — the
 // mass-assignment defense in plan §13.4.
@@ -41,6 +46,13 @@ const LoginSchema = z
   })
   .strict();
 
+const OAuthExchangeSchema = z
+  .object({
+    code: z.string().min(1).max(2048),
+    state: z.string().min(1).max(512),
+  })
+  .strict();
+
 @Controller({ path: "auth", version: "1" })
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
@@ -48,6 +60,8 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly mfa: MfaService,
+    private readonly oauth: OAuthService,
+    private readonly tokens: TokenService,
     private readonly config: ConfigService<Env, true>,
     private readonly cart: CartService,
   ) {}
@@ -139,6 +153,104 @@ export class AuthController {
     const ok = await this.mfa.verifyChallenge(req.auth.sub, req.auth.email, body.code);
     if (!ok) throw AppError.validation("That code isn't right.");
     await this.mfa.disable(req.auth.sub);
+  }
+
+  // ── Google sign-in (FR-AUTH-07) ──────────────────────────────────────────
+
+  /**
+   * Which providers this deployment can actually offer.
+   *
+   * The page asks before drawing the button, so an install with no Google
+   * credentials simply shows password sign-in rather than a control that can
+   * only produce an error.
+   */
+  @Public()
+  @Get("oauth/providers")
+  oauthProviders() {
+    return { google: this.oauth.isGoogleConfigured() };
+  }
+
+  /**
+   * Step one: hand back the URL to send the browser to, and remember the state.
+   *
+   * The state and PKCE verifier go into an httpOnly cookie rather than into the
+   * URL or a server-side store: the browser carries them, cannot read them, and
+   * they expire on their own if the round-trip is abandoned.
+   */
+  @Public()
+  @Get("oauth/google/start")
+  @HttpCode(200)
+  async startGoogleSignIn(
+    @Query("redirectTo") redirectTo: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const destination = safeRedirectPath(redirectTo);
+    const { authorizeUrl, nonce, codeVerifier } =
+      this.oauth.buildGoogleAuthorization(destination);
+
+    const state = await this.tokens.issueOAuthState({
+      nonce,
+      codeVerifier,
+      redirectTo: destination,
+    });
+
+    res.cookie(OAUTH_STATE_COOKIE, state, {
+      ...this.cookieBase(),
+      // Lax and not Strict: the browser arrives back from Google as a top-level
+      // navigation from another site, and Strict would withhold the cookie on
+      // exactly that request — the flow could never complete.
+      sameSite: "lax",
+      path: "/",
+      maxAge: 10 * 60 * 1000,
+    });
+
+    return { authorizeUrl };
+  }
+
+  /**
+   * Step two: redeem the code Google handed back, and sign in.
+   *
+   * Reached only through the BFF, which forwards the code it received on the
+   * callback along with the state cookie.
+   */
+  @Public()
+  @Post("oauth/google/exchange")
+  @HttpCode(200)
+  async exchangeGoogleCode(
+    @Body(zodBody(OAuthExchangeSchema)) body: z.infer<typeof OAuthExchangeSchema>,
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_STATE_COOKIE];
+    if (!cookie) throw AppError.unauthenticated("That sign-in attempt expired. Please start again.");
+
+    const claims = await this.tokens.verifyOAuthState(cookie);
+
+    // Spend it before doing anything else. A code is redeemable once, and a
+    // state cookie that survived a failed attempt could be paired with a
+    // second code.
+    res.clearCookie(OAUTH_STATE_COOKIE, { ...this.cookieBase(), path: "/" });
+
+    if (!matches(claims.nonce, body.state)) {
+      this.logger.warn("Google callback state did not match the issued nonce");
+      throw AppError.unauthenticated("That sign-in attempt expired. Please start again.");
+    }
+
+    const profile = await this.oauth.exchangeGoogleCode(body.code, claims.codeVerifier);
+    const { userId } = await this.oauth.resolveProfile(profile);
+
+    const outcome = await this.auth.completeProviderSignIn(userId, {
+      ip: req.ip,
+      userAgent: req.header("user-agent"),
+    });
+
+    if (outcome.kind === "mfa_required") {
+      return { status: "mfa_required", challengeToken: outcome.challengeToken };
+    }
+
+    this.setSessionCookies(res, outcome.session);
+    await this.adoptGuestCart(req, res, outcome.session.userId);
+    return { status: "ok", redirectTo: claims.redirectTo };
   }
 
   @Public()
@@ -241,4 +353,32 @@ export class AuthController {
     res.clearCookie(ACCESS_COOKIE, this.cookieBase());
     res.clearCookie(REFRESH_COOKIE, { ...this.cookieBase(), path: "/api/v1/auth" });
   }
+}
+
+/**
+ * Reduces a caller-supplied "come back here afterwards" to a path on this site.
+ *
+ * `redirectTo` survives a round-trip through Google and comes back as a place
+ * we are about to send a freshly-authenticated browser. Left unchecked it is an
+ * open redirect: a link that genuinely starts at our sign-in, and lands on a
+ * copy of it asking the now-suspicious user to "confirm" their password.
+ *
+ * Only a single-slash absolute path is kept. `//evil.example` is protocol-
+ * relative and is rejected along with anything carrying a scheme.
+ */
+export function safeRedirectPath(candidate: string | undefined): string {
+  const fallback = "/account";
+  if (!candidate || !candidate.startsWith("/") || candidate.startsWith("//")) return fallback;
+  // A backslash is treated as a slash by some browsers when resolving URLs,
+  // which turns `/\evil.example` into another way of writing `//`.
+  if (candidate.includes("\\")) return fallback;
+  return candidate;
+}
+
+/** Constant-time string compare, for values an attacker gets to submit. */
+function matches(expected: string, presented: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(presented);
+  // timingSafeEqual throws on a length mismatch, which would itself be a signal.
+  return a.length === b.length && timingSafeEqual(a, b);
 }

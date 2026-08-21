@@ -12,10 +12,24 @@ type Step = { kind: "credentials" } | { kind: "mfa"; challengeToken: string };
  * that ignored the challenge would simply have no session — there is nothing
  * to skip past.
  */
-export function SignInForm() {
+export function SignInForm({
+  initialChallengeToken,
+  initialError,
+}: {
+  /**
+   * Set when the user arrived from Google and the account has a second factor.
+   * The password step is already satisfied; only the code is outstanding.
+   */
+  initialChallengeToken?: string;
+  initialError?: string;
+} = {}) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>({ kind: "credentials" });
-  const [error, setError] = useState<string>();
+  const [step, setStep] = useState<Step>(
+    initialChallengeToken
+      ? { kind: "mfa", challengeToken: initialChallengeToken }
+      : { kind: "credentials" },
+  );
+  const [error, setError] = useState<string | undefined>(initialError);
   const [pending, setPending] = useState(false);
 
   async function submitCredentials(formData: FormData) {

@@ -21,6 +21,16 @@ export interface AccessTokenClaims {
 
 const ALG = "EdDSA";
 const MFA_AUDIENCE = "bba-mfa-challenge";
+const OAUTH_STATE_AUDIENCE = "bba-oauth-state";
+
+export interface OAuthStateClaims {
+  /** The nonce echoed back by the provider in `?state=`. */
+  nonce: string;
+  /** PKCE verifier. Never leaves the server; only its hash goes to Google. */
+  codeVerifier: string;
+  /** Where to send the browser once the session exists. */
+  redirectTo: string;
+}
 
 @Injectable()
 export class TokenService implements OnModuleInit {
@@ -114,6 +124,49 @@ export class TokenService implements OnModuleInit {
       });
       if (payload.purpose !== "mfa_challenge") throw new Error("wrong purpose");
       return payload.sub!;
+    } catch {
+      throw AppError.unauthenticated("That sign-in attempt expired. Please start again.");
+    }
+  }
+
+  /**
+   * Signs the one-time state for an OAuth authorisation round-trip.
+   *
+   * This travels as an httpOnly cookie while the browser is away at Google, and
+   * is what makes the callback verifiable: the `state` Google echoes back must
+   * match the nonce sealed in here. Without that pairing, anyone could send a
+   * victim a callback URL carrying *their* authorisation code and silently land
+   * the victim in the attacker's account — login CSRF, and the reason `state`
+   * is not optional.
+   *
+   * Its own audience, like the MFA challenge: a token that authorises
+   * "finish this sign-in round-trip" must never be presentable as an access token.
+   */
+  async issueOAuthState(claims: OAuthStateClaims): Promise<string> {
+    return new SignJWT({ ...claims })
+      .setProtectedHeader({ alg: ALG })
+      .setJti(randomUUID())
+      .setIssuedAt()
+      .setIssuer(this.config.get("JWT_ISSUER", { infer: true }))
+      .setAudience(OAUTH_STATE_AUDIENCE)
+      // Long enough to pick an account and type a password, short enough that a
+      // cookie left behind on a shared machine is inert by the time it is found.
+      .setExpirationTime("10m")
+      .sign(this.privateKey);
+  }
+
+  async verifyOAuthState(token: string): Promise<OAuthStateClaims> {
+    try {
+      const { payload } = await jwtVerify(token, this.publicKey, {
+        algorithms: [ALG],
+        issuer: this.config.get("JWT_ISSUER", { infer: true }),
+        audience: OAUTH_STATE_AUDIENCE,
+      });
+      return {
+        nonce: payload.nonce as string,
+        codeVerifier: payload.codeVerifier as string,
+        redirectTo: payload.redirectTo as string,
+      };
     } catch {
       throw AppError.unauthenticated("That sign-in attempt expired. Please start again.");
     }
