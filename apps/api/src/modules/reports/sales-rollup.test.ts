@@ -572,3 +572,39 @@ describe("what sold most", () => {
     expect(await reports.topProducts(STORE, { ...WINDOW, limit: 3 })).toHaveLength(3);
   });
 });
+
+describe("the dashboard summary", () => {
+  it("totals today, the last seven days and the last thirty", async () => {
+    // Dated relative to now, because the summary's windows are anchored to the
+    // store's today rather than to a fixed date.
+    const day = (ago: number) =>
+      new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10) + "T18:00:00Z";
+
+    await order({ placedAt: day(0), subtotal: 1000 });
+    await order({ placedAt: day(3), subtotal: 2000 });
+    await order({ placedAt: day(20), subtotal: 4000 });
+    // Outside every window.
+    await order({ placedAt: day(60), subtotal: 8000 });
+
+    const from = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    await rollup.recomputeStore(STORE, { from, to });
+
+    const summary = await reports.summary(STORE);
+
+    expect(summary.today.netCents).toBe(1000);
+    expect(summary.last7.netCents).toBe(3000);
+    expect(summary.last30.netCents).toBe(7000);
+    expect(summary.last30.ordersCount).toBe(3);
+  });
+
+  it("reports zeroes and no timestamp for a shop that has sold nothing", async () => {
+    const summary = await reports.summary(STORE);
+
+    expect(summary.today).toEqual({ netCents: 0, ordersCount: 0 });
+    expect(summary.last30).toEqual({ netCents: 0, ordersCount: 0 });
+    // Null rather than "now": the dashboard says "no figures yet" instead of
+    // claiming it is up to date with nothing behind it.
+    expect(summary.computedAt).toBeNull();
+  });
+});

@@ -34,10 +34,12 @@ export default async function OpsLayout({
     <AppShell
       eyebrow="Store"
       title={store.name}
-      // Orders first: it is the screen staff live in all day, and the one
-      // they need to reach without thinking.
+      // Overview first, then Orders. The queue is still where staff live all
+      // day; the overview is where an owner starts the morning, and it is the
+      // only screen that answers "how are we doing" before "what is waiting".
       unreadCount={unread}
       nav={[
+        { href: base, label: "Overview" },
         { href: `${base}/orders`, label: "Orders" },
         { href: `${base}/till`, label: "Till" },
         { href: `${base}/catalog`, label: "Catalog" },

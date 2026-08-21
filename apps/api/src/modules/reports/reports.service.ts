@@ -128,6 +128,60 @@ export class ReportsService {
   }
 
   /**
+   * Today, the last seven days and the last thirty — the owner's morning view
+   * (FR-DASH-01).
+   *
+   * One query rather than three: the three windows nest, so a single pass over
+   * the widest one can total all of them with FILTER clauses. Reading the
+   * rollup, it is a scan of thirty rows.
+   *
+   * "Today" is the store's today. Working it out here rather than from the
+   * server's clock matters for a shop whose evening is already tomorrow in
+   * UTC — they would otherwise arrive in the morning to a dashboard showing
+   * yesterday's takings as today's.
+   */
+  async summary(storeId: string): Promise<StoreSummary> {
+    const rows = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<
+        {
+          today_net: bigint | null;
+          today_orders: bigint | null;
+          week_net: bigint | null;
+          week_orders: bigint | null;
+          month_net: bigint | null;
+          month_orders: bigint | null;
+          computed_at: Date | null;
+        }[]
+      >`
+        WITH today AS (
+          SELECT (now() AT TIME ZONE s.timezone)::date AS d
+          FROM stores s WHERE s.id = ${storeId}
+        )
+        SELECT
+          sum(net_cents)    FILTER (WHERE date = (SELECT d FROM today))                        AS today_net,
+          sum(orders_count) FILTER (WHERE date = (SELECT d FROM today))                        AS today_orders,
+          sum(net_cents)    FILTER (WHERE date > (SELECT d FROM today) - 7)                    AS week_net,
+          sum(orders_count) FILTER (WHERE date > (SELECT d FROM today) - 7)                    AS week_orders,
+          sum(net_cents)                                                                        AS month_net,
+          sum(orders_count)                                                                     AS month_orders,
+          max(computed_at)                                                                      AS computed_at
+        FROM daily_store_sales
+        WHERE store_id = ${storeId}
+          AND date > (SELECT d FROM today) - 30
+          AND date <= (SELECT d FROM today)
+      `,
+    );
+
+    const r = rows[0];
+    return {
+      today: { netCents: Number(r?.today_net ?? 0), ordersCount: Number(r?.today_orders ?? 0) },
+      last7: { netCents: Number(r?.week_net ?? 0), ordersCount: Number(r?.week_orders ?? 0) },
+      last30: { netCents: Number(r?.month_net ?? 0), ordersCount: Number(r?.month_orders ?? 0) },
+      computedAt: r?.computed_at ? r.computed_at.toISOString() : null,
+    };
+  }
+
+  /**
    * What sold most, over a window (FR-REP-02).
    *
    * Reads `daily_store_product_sales`, not `order_items` — the same move
@@ -205,6 +259,24 @@ export class ReportsService {
   }
 }
 
+
+/** One period's headline figures. */
+export interface SummaryFigures {
+  netCents: number;
+  ordersCount: number;
+}
+
+export interface StoreSummary {
+  today: SummaryFigures;
+  last7: SummaryFigures;
+  last30: SummaryFigures;
+  /**
+   * When the rollup behind these figures last ran, or null if it never has.
+   * The dashboard says so: a number with no age on it invites somebody to
+   * reconcile against a till that is fifteen minutes ahead of it.
+   */
+  computedAt: string | null;
+}
 
 /** What one line sold, over a window. */
 export interface ProductSales {

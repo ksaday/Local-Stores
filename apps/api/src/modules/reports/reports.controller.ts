@@ -32,6 +32,13 @@ const TopProductsQuerySchema = z
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
+  /** Today / 7 days / 30 days, for the ops dashboard. */
+  @Get("summary")
+  @RequirePermission("reports:sales")
+  summary(@Param("storeId") storeId: string) {
+    return this.reports.summary(storeId);
+  }
+
   @Get("sales")
   @RequirePermission("reports:sales")
   sales(

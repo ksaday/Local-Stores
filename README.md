@@ -111,8 +111,11 @@ workspace you can leave and come back to: pick a shelf, type what is on it, and
 the quantity box keeps focus, because this is used standing up with a phone in
 one hand.
 
-**Reporting** — a `daily_store_sales` rollup, one row per shop per trading
-day, and the query layer that reads it. Reports never aggregate `orders`: "how
+**Reporting** — two rollups and the screens that read them: takings by day,
+week or month with a chart and its table twin, best sellers by units and
+revenue, and an overview that opens on today / 7 days / 30 days beside the open
+queue and whatever is running low. The overview is for noticing rather than
+working — every panel links to the screen where the work happens. Reports never aggregate `orders`: "how
 did we do last quarter" is otherwise a scan of every order the shop has ever
 taken, and it gets slower every day they stay open.
 

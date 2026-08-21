@@ -361,6 +361,7 @@ async function discoverPages(browser) {
   // operation, which is what axe measures, so they are in the gate too.
   {
     for (const [seg, label] of [
+      ["", "ops overview"],
       ["orders", "order queue"],
       ["catalog", "catalog"],
       ["inventory", "stock"],
@@ -371,7 +372,8 @@ async function discoverPages(browser) {
       ["coupons", "coupons"],
       ["settings", "store settings"],
     ]) {
-      pages.push({ path: `/store/${storeId}/ops/${seg}`, label, needsAuth: true });
+      const path = seg ? `/store/${storeId}/ops/${seg}` : `/store/${storeId}/ops`;
+      pages.push({ path, label, needsAuth: true });
     }
     pages.push({ path: "/account", label: "account", needsAuth: true });
     pages.push({ path: "/notifications", label: "notifications", needsAuth: true });

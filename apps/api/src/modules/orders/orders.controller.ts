@@ -36,6 +36,13 @@ export class OrdersController {
     });
   }
 
+  /** Counts by open status, for the dashboard's pipeline widget. */
+  @Get("pipeline")
+  @RequirePermission("orders:read")
+  pipeline(@Param("storeId") storeId: string) {
+    return this.orders.pipeline(storeId);
+  }
+
   @Get(":orderId")
   @RequirePermission("orders:read")
   get(@Param("storeId") storeId: string, @Param("orderId") orderId: string) {
