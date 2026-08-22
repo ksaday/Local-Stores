@@ -84,6 +84,25 @@ async function emit(type: string, payload: Record<string, unknown> = {}): Promis
   );
 }
 
+/**
+ * What the relay published *for this store*.
+ *
+ * The relay is global by design: it drains every unpublished row in the
+ * database, which is the whole point of it. So `published` also collects
+ * whatever else happened to be pending — another suite's events, or an order
+ * somebody placed by hand against the shared dev database — and asserting on
+ * the raw list makes this file fail for reasons that have nothing to do with
+ * the relay. It did exactly that, with "expected 2 to be 1".
+ *
+ * The same reasoning as the expiry-sweeper tests in `orders.service.test.ts`:
+ * assert on the rows this test created, not on a total the test does not own.
+ */
+function mine(): { type: string; storeId: string | null; payload: Record<string, unknown> }[] {
+  return published
+    .map((p) => JSON.parse(p.message) as { type: string; storeId: string | null; payload: Record<string, unknown> })
+    .filter((event) => event.storeId === STORE);
+}
+
 async function readRows() {
   return asAdmin((db) =>
     db.$queryRaw<{ type: string; published_at: Date | null; attempts: number }[]>`
@@ -127,12 +146,10 @@ describe("relaying", () => {
 
     const count = await relay.runOnce();
 
-    expect(count).toBe(1);
-    expect(published).toHaveLength(1);
-    expect(JSON.parse(published[0]!.message)).toMatchObject({
-      type: "order.created",
-      storeId: STORE,
-    });
+    // At least ours: the return is a count of everything the pass drained.
+    expect(count).toBeGreaterThanOrEqual(1);
+    expect(mine()).toHaveLength(1);
+    expect(mine()[0]).toMatchObject({ type: "order.created", storeId: STORE });
     expect((await readRows())[0]!.published_at).not.toBeNull();
   });
 
@@ -145,7 +162,7 @@ describe("relaying", () => {
     await relay.runOnce();
     await relay.runOnce();
 
-    expect(published).toHaveLength(1);
+    expect(mine()).toHaveLength(1);
   });
 
   it("publishes in the order the events happened", async () => {
@@ -156,7 +173,7 @@ describe("relaying", () => {
 
     await relay.runOnce();
 
-    expect(published.map((p) => JSON.parse(p.message).type)).toEqual([
+    expect(mine().map((event) => event.type)).toEqual([
       "order.created",
       "order.status_changed",
       "order.payment_recorded",
@@ -164,8 +181,12 @@ describe("relaying", () => {
   });
 
   it("does nothing when there is nothing to publish", async () => {
-    expect(await relay.runOnce()).toBe(0);
-    expect(published).toHaveLength(0);
+    // Scoped to this store rather than asserting the pass drained nothing at
+    // all: the relay is global, so an unrelated pending row elsewhere would
+    // make a zero-total assertion fail without saying anything about this.
+    await relay.runOnce();
+
+    expect(mine()).toHaveLength(0);
   });
 
   it("carries the payload through untouched", async () => {
@@ -173,7 +194,7 @@ describe("relaying", () => {
 
     await relay.runOnce();
 
-    expect(JSON.parse(published[0]!.message).payload).toEqual({
+    expect(mine()[0]!.payload).toEqual({
       orderNumber: "OUT-9",
       status: "PENDING",
       orderId: "abc",
@@ -206,22 +227,26 @@ describe("failure handling", () => {
     await emit("order.created", { seq: 1 });
     await emit("order.status_changed", { seq: 2 });
 
-    let call = 0;
+    // Fails one identified event rather than "whichever call comes first".
+    // The pass drains every pending row in the database, so a first-call rule
+    // sabotages whatever happened to be at the front of the queue — which on a
+    // shared dev database is often not this test's event at all.
     const original = (relay as unknown as { publisher: { publish: unknown } }).publisher.publish;
     (relay as unknown as { publisher: { publish: unknown } }).publisher.publish = async (
       _c: string,
       m: string,
     ) => {
-      call += 1;
-      if (call === 1) throw new Error("transient");
+      const event = JSON.parse(m) as { storeId: string | null; payload: { seq?: number } };
+      if (event.storeId === STORE && event.payload.seq === 1) throw new Error("transient");
       published.push({ channel: "x", message: m });
       return 1;
     };
 
     const count = await relay.runOnce();
 
-    expect(count).toBe(1);
-    expect(JSON.parse(published[0]!.message).type).toBe("order.status_changed");
+    expect(count).toBeGreaterThanOrEqual(1);
+    expect(mine()).toHaveLength(1);
+    expect(mine()[0]!.type).toBe("order.status_changed");
 
     (relay as unknown as { publisher: { publish: unknown } }).publisher.publish = original;
   });
@@ -237,7 +262,7 @@ describe("failure handling", () => {
     (relay as unknown as { publisher: { publish: unknown } }).publisher.publish = original;
     const count = await relay.runOnce();
 
-    expect(count).toBe(1);
+    expect(count).toBeGreaterThanOrEqual(1);
     expect((await readRows())[0]!.published_at).not.toBeNull();
   });
 
@@ -248,8 +273,12 @@ describe("failure handling", () => {
     );
 
     // Skipped rather than retried forever: one poisonous row must not block
-    // every event behind it.
-    expect(await relay.runOnce()).toBe(0);
+    // every event behind it. Asserted as "ours was not published" rather than
+    // "nothing was", since the pass also drains unrelated rows.
+    await relay.runOnce();
+
+    expect(mine()).toHaveLength(0);
+    expect((await readRows())[0]!.published_at).toBeNull();
     expect(await relay.deadLettered()).toBeGreaterThanOrEqual(1);
   });
 });
