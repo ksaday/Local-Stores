@@ -1,0 +1,299 @@
+# Prometheus alerting rules for the BBA platform.
+#
+# Every expression here also appears in docs/ops/runbooks.md, and that is the
+# point: an alert whose runbook says something different from the rule that
+# fired it wastes the first ten minutes of an incident. `scripts/check-alert-rules.mjs`
+# keeps them honest — it fails CI if a rule names a metric the code does not
+# register, or points at a runbook section that does not exist.
+#
+# Two labels drive routing, and the distinction is deliberate:
+#   severity: page   — wake somebody up. Money is moving wrongly, or shops
+#                      cannot trade, or the process is serving nothing. Seven
+#                      of nineteen, and the list is short on purpose.
+#   severity: ticket — look at it on a weekday. Something is degraded or a
+#                      safety net caught something it should not have had to.
+#
+# An alert that pages and cannot be acted on at 3am is how an on-call learns to
+# ignore the ones that can, so the page list is kept short on purpose.
+
+groups:
+  # ── Money ────────────────────────────────────────────────────────────────
+  - name: bba-money
+    rules:
+      - alert: PaymentsUnreconciled
+        # No threshold and no `for`: one occurrence is one real customer
+        # charged for something they did not get, and it does not heal.
+        # confirm_failed is excluded because the expiry sweep repairs it within
+        # the order's thirty-minute TTL — see the runbook for why paging on a
+        # self-healing condition is worse than not paging at all.
+        expr: increase(payments_unreconciled_total{cause!="confirm_failed"}[10m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Money taken with no order ({{ $labels.cause }})"
+          description: >-
+            A payment succeeded at the provider without an order reaching
+            CONFIRMED. Needs somebody with refund authority.
+          runbook: "docs/ops/runbooks.md#money-taken-with-no-order--payments_unreconciled_total"
+
+      - alert: CheckoutSuccessRateLow
+        # Deliberately NOT completions/attempts: attempts includes rejections —
+        # sold-out items, empty carts — which are the system working correctly.
+        # A busy evening that sells 3% of checkouts out would page somebody
+        # about inventory they cannot conjure. clamp_min guards the 0/0 at
+        # night, when both terms are zero and the ratio would be NaN.
+        expr: >-
+          sum(rate(checkout_completions_total[10m]))
+          /
+          clamp_min(
+            sum(rate(checkout_completions_total[10m]))
+            + sum(rate(checkout_failures_total{kind="error"}[10m])),
+            0.001)
+          < 0.98
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Checkout success rate below 98%"
+          description: "Shops are losing sales now. Separate our faults from card declines before anything else."
+          runbook: "docs/ops/runbooks.md#checkout-success-rate-below-98"
+
+      - alert: CardDeclineSpike
+        # Not a page: declines are somebody else's problem most of the time,
+        # and the checkout alert above already covers our own faults. Worth a
+        # ticket because a sharp move in one decline code can mean a fraud rule
+        # or a Connect account problem rather than shoppers being short.
+        expr: >-
+          sum(rate(payment_outcomes_total{outcome="failed"}[30m]))
+          /
+          clamp_min(sum(rate(payment_outcomes_total[30m])), 0.001)
+          > 0.3
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Card declines are over 30% of payment attempts"
+          description: "Check the dominant `reason`. insufficient_funds is shoppers; do_not_honor jumping is not."
+          runbook: "docs/ops/runbooks.md#checkout-success-rate-below-98"
+
+      - alert: OrdersRecoveredRising
+        # Explicitly not a page. The customer has their order and the money is
+        # accounted for — the safety net worked. It still means the normal
+        # confirmation path failed upstream, which is worth a weekday look.
+        expr: increase(orders_recovered_total[1h]) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Orders are being confirmed by the repair path, not the payment handler"
+          description: "The expiry sweep is confirming paid orders. Find out why payment_intent.succeeded is not."
+          runbook: "docs/ops/runbooks.md#money-taken-with-no-order--payments_unreconciled_total"
+
+      - alert: PaymentConfirmFailed
+        expr: increase(payments_unreconciled_total{cause="confirm_failed"}[1h]) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A payment was recorded but the order would not confirm"
+          description: "Self-heals within the order's 30-minute TTL. Read the transition error by orderId."
+          runbook: "docs/ops/runbooks.md#money-taken-with-no-order--payments_unreconciled_total"
+
+  # ── Availability and latency ─────────────────────────────────────────────
+  - name: bba-availability
+    rules:
+      - alert: AvailabilitySLOBurn
+        # NFR-AVL-01 is 99.9% monthly, so the budget is 0.1%. Burning at 14x
+        # over an hour exhausts a month of budget in roughly two days, which is
+        # the standard fast-burn trigger: severe enough to be real, slow enough
+        # not to fire on one bad minute.
+        expr: >-
+          sum(rate(http_request_duration_seconds_count{status=~"5.."}[1h]))
+          /
+          clamp_min(sum(rate(http_request_duration_seconds_count[1h])), 0.001)
+          > 0.014
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Error budget burning at 14x — 99.9% monthly is at risk"
+          description: "5xx rate over 1.4%. Check whether it is everything or one route."
+          runbook: "docs/ops/runbooks.md#availability-slo-burn"
+
+      - alert: ReadLatencySLOBreached
+        # NFR-PRF-03: reads under 300ms at p95. The histogram has a bucket edge
+        # exactly there so this is counted rather than interpolated.
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{method="GET"}[15m])))
+          > 0.3
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Read p95 over 300ms (NFR-PRF-03)"
+          description: "Check db.transaction spans in a trace before assuming it is the API."
+          runbook: "docs/ops/runbooks.md#database-cpu-above-85-or-connections-above-80"
+
+      - alert: WriteLatencySLOBreached
+        # NFR-PRF-04: writes under 600ms at p95, excluding external calls.
+        # Stripe time is tracked separately in stripe_call_duration_seconds
+        # precisely so a slow provider does not read as a slow platform.
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{method=~"POST|PATCH|PUT|DELETE"}[15m])))
+          > 0.6
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Write p95 over 600ms (NFR-PRF-04)"
+          description: "Compare against stripe_call_duration_seconds — third-party time is excluded from this SLO."
+          runbook: "docs/ops/runbooks.md#database-cpu-above-85-or-connections-above-80"
+
+      - alert: StripeSlow
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le, operation) (rate(stripe_call_duration_seconds_bucket[15m])))
+          > 5
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Stripe p95 over 5s for {{ $labels.operation }}"
+          description: "Watch outcome=error on the same metric: slow-and-throwing is usually our 15s client timeout."
+          runbook: "docs/ops/runbooks.md#checkout-success-rate-below-98"
+
+  # ── The asynchronous pipeline ────────────────────────────────────────────
+  - name: bba-pipeline
+    rules:
+      - alert: OutboxDeadLettered
+        # Every customer notification rides on the outbox. A parked event means
+        # staff screens have stopped hearing about something and will not start
+        # again on their own.
+        expr: max(outbox_dead_lettered) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Outbox events parked after repeated failures"
+          description: "Read last_error and group by type: one type is a handler bug, every type is infrastructure."
+          runbook: "docs/ops/runbooks.md#dead-letter-queue-non-empty"
+
+      - alert: MailUndelivered
+        # A failed outbox event costs a stale screen; a failed email is a
+        # password reset or a suspension warning that never arrived.
+        expr: max(queue_depth{queue="mail",state="failed"}) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Email that exhausted every retry"
+          description: "Somebody did not get a password reset or a suspension warning."
+          runbook: "docs/ops/runbooks.md#dead-letter-queue-non-empty"
+
+      - alert: MediaUnprocessed
+        expr: max(queue_depth{queue="media",state="failed"}) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Images that failed every processing attempt"
+          description: "An owner uploaded a picture and is still waiting to see it appear."
+          runbook: "docs/ops/runbooks.md#dead-letter-queue-non-empty"
+
+      - alert: OutboxBacklogGrowing
+        # The relay runs every second. A backlog that survives ten minutes
+        # means it is behind or stopped, which presents to shops exactly as
+        # webhook processing lag: paid orders that still look unpaid.
+        expr: max(outbox_pending) > 500
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Outbox backlog over 500 and not draining"
+          description: "Paid orders may be showing as unpaid to shops. Check the worker is alive."
+          runbook: "docs/ops/runbooks.md#webhook-processing-lag-over-5-minutes"
+
+      - alert: QueueBacklogGrowing
+        expr: max by (queue) (queue_depth{state="waiting"}) > 1000
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.queue }} queue is backing up"
+          description: "Waiting climbing with active flat usually means the worker has stopped consuming."
+          runbook: "docs/ops/runbooks.md#dead-letter-queue-non-empty"
+
+      - alert: ReportsGoingStale
+        # Quiet by nature and dangerous for it: nothing breaks, every reporting
+        # page just keeps rendering yesterday's figures as though they were
+        # today's. The sweep runs every fifteen minutes, so two hours is eight
+        # missed passes — long enough not to fire on a quiet weekend, which
+        # ages this gauge legitimately.
+        expr: max(rollup_staleness_seconds) > 7200
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Sales rollups over two hours old"
+          description: "Read job_last_run_age_seconds{job=\"sales-rollup\"} first: a recent pass means a quiet platform, not a fault."
+          runbook: "docs/ops/runbooks.md#reports-going-stale"
+
+      - alert: ScheduledJobNotRunning
+        # Ten times the slowest interval among the leased jobs. Catches a
+        # worker that is alive but whose scheduler has stopped, which nothing
+        # else would notice.
+        expr: max by (job) (job_last_run_age_seconds) > 10800
+        for: 15m
+        labels:
+          # Not a page. Three hours have already passed by the time this fires,
+          # another eight change little, and the consequences that do matter —
+          # stale reports, unsent dunning — have their own alerts. A scheduler
+          # that dies usually comes back when the task restarts.
+          severity: ticket
+        annotations:
+          summary: "Scheduled job {{ $labels.job }} has not run for three hours"
+          description: "The worker may be up while its schedule is stopped. Check for a stuck lease."
+          runbook: "docs/ops/runbooks.md#reports-going-stale"
+
+  # ── The monitoring itself ────────────────────────────────────────────────
+  - name: bba-monitoring
+    rules:
+      - alert: PipelineMetricsBlind
+        # These gauges are read from Postgres and Redis at scrape time, and a
+        # collector that cannot answer REMOVES its series rather than reporting
+        # zero — a deliberate design choice, because zero reads as healthy.
+        # `absent()` is what turns that silence back into a signal; without this
+        # rule the careful part of that design goes unwatched.
+        expr: absent(outbox_dead_lettered) or absent(rollup_staleness_seconds)
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Pipeline gauges are missing, not zero"
+          description: >-
+            A collector could not reach Postgres or Redis. Absence means
+            unknown and is never to be read as healthy — check
+            pipeline_metrics_collect_failures_total by collector.
+          runbook: "docs/ops/runbooks.md#not-on-this-list"
+
+      - alert: MetricsCollectorFailing
+        expr: increase(pipeline_metrics_collect_failures_total[15m]) > 5
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The {{ $labels.collector }} metrics collector keeps failing"
+          description: "Repeated timeouts or errors reading state. The gauges it feeds are unreliable until fixed."
+          runbook: "docs/ops/runbooks.md#not-on-this-list"
+
+      - alert: EventLoopBlocked
+        # A Node process that stops yielding serves nothing while still passing
+        # a TCP health check, so this is the cheapest early warning there is.
+        expr: max(nodejs_eventloop_lag_p99_seconds) > 1
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Event loop lag p99 over one second"
+          description: "The process is blocked. Requests are queueing even though it still answers health checks."
+          runbook: "docs/ops/runbooks.md#disk-or-memory-pressure"

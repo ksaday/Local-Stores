@@ -15,6 +15,21 @@ the first person to need it discovers the gap during an incident.
 
 ---
 
+## 0. Where this is implemented
+
+| Thing | Where |
+|---|---|
+| Alert rules | [`infra/monitoring/alerts.yml`](../../infra/monitoring/alerts.yml) — 19 alerts, checked in CI by `npm run alerts` |
+| Runbooks | [`runbooks.md`](runbooks.md), one section per alert |
+| Metrics | `apps/api/src/infra/observability/` |
+| Traces | same, plus `apps/web/src/instrumentation.ts` for the BFF hop |
+
+Dashboards are **not** built. They are a rendering of the metrics that already
+exist and depend on the monitoring backend being chosen; the alerts are what
+actually wake somebody, so they came first.
+
+---
+
 ## 1. Service level objectives
 
 Derived from the NFRs in [§3](../plan/03-non-functional-requirements.md). Each

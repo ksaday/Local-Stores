@@ -92,6 +92,12 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Alert rules
+        # Before the heavy jobs: it needs no database, no build and no browser,
+        # and an alert naming a metric nobody registers is a silent failure in
+        # production — it loads, evaluates against nothing, and never fires.
+        run: npm run alerts
+
       - name: Cross-tenant isolation gate
         # Run again on its own so a failure here is unmistakable in the log.
         # Any store-A actor reaching store-B's rows means RLS has a hole, and

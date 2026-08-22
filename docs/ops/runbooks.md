@@ -1,5 +1,17 @@
 # Runbooks
 
+> **The rules that fire these are in [`infra/monitoring/alerts.yml`](../../infra/monitoring/alerts.yml).**
+> Nineteen alerts: seven page, twelve raise a ticket. `npm run alerts` — which
+> runs in CI — fails if a rule names a metric nothing registers or links to a
+> section of this file that does not exist. Both are silent failures otherwise:
+> a rule with a mistyped metric loads happily, evaluates against an empty
+> vector forever, and never fires.
+>
+> Three alerts here have **no rule yet**, because the metrics they need are
+> infrastructure-level rather than application-level and will come from
+> CloudWatch: *Database CPU above 85%*, *Disk or memory pressure* (the process
+> half is covered by `EventLoopBlocked`), and *HIGH-severity audit event*.
+
 One per alert that wakes somebody up. The list is
 [§14.5's](../plan/14-deployment-architecture.md) page-a-human policy; the
 signals behind them are specified in [observability.md](observability.md), and

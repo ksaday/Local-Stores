@@ -18,13 +18,15 @@
     "db:up": "brew services start postgresql@16 && brew services start redis",
     "db:down": "brew services stop postgresql@16 && brew services stop redis",
     "a11y": "node scripts/a11y.mjs",
-    "bundle": "node scripts/bundle-budget.mjs"
+    "bundle": "node scripts/bundle-budget.mjs",
+    "alerts": "node scripts/check-alert-rules.mjs"
   },
   "devDependencies": {
     "axe-core": "^4.13.0",
     "playwright": "^1.62.1",
     "turbo": "^2.3.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "yaml": "^2.9.0"
   },
   "packageManager": "npm@11.10.1"
 }
