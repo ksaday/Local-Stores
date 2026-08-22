@@ -18,6 +18,18 @@ const envSchema = z.object({
   WORKER_METRICS_PORT: z.coerce.number().int().positive().default(9465),
 
   /**
+   * OTLP collector endpoint. Unset means tracing is off entirely — no SDK and
+   * no module patching, rather than recording spans nobody collects.
+   */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+  /** Print spans to stdout instead of exporting. For looking at them locally. */
+  OTEL_TRACES_CONSOLE: z.coerce.boolean().default(false),
+  /** Fraction of ordinary traces kept. Errors and slow requests ignore it. */
+  OTEL_BASELINE_RATIO: z.coerce.number().min(0).max(1).default(0.05),
+  /** A request at or over this many ms is always traced. Set at NFR-PRF-04. */
+  OTEL_SLOW_REQUEST_MS: z.coerce.number().int().positive().default(600),
+
+  /**
    * Log format. Defaults to prose locally and JSON in production, which is
    * almost always what you want — but it is a setting rather than an inference
    * so the shipping format can be exercised on a laptop. A log pipeline that

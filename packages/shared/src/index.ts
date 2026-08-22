@@ -5,3 +5,4 @@ export * from "./errors.js";
 export * from "./store-lifecycle.js";
 export * from "./contrast.js";
 export * from "./csv.js";
+export * from "./trace-sampling.js";

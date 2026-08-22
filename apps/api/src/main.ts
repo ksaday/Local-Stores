@@ -1,4 +1,7 @@
 import "reflect-metadata";
+// Must be the first import after reflect-metadata: instrumentation patches
+// http/express/pg as they load, so anything loaded before it is never traced.
+import "./tracing-bootstrap.js";
 import { Logger, VersioningType } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";

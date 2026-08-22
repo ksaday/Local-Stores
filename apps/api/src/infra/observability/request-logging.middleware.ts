@@ -2,6 +2,8 @@ import { Injectable, NestMiddleware } from "@nestjs/common";
 import type { NextFunction, Request, Response } from "express";
 import { JsonLogger } from "./logger.js";
 import { httpRequestDuration, routeTemplate } from "./metrics.js";
+import { annotateRequestSpan } from "./tracing.js";
+import { getRequestContext } from "../../common/context/request-context.js";
 
 /**
  * One line and one observation per request, when it finishes.
@@ -32,6 +34,13 @@ export class RequestLoggingMiddleware implements NestMiddleware {
         { method: req.method, route, status: String(status) },
         seconds,
       );
+
+      // The same two facts onto the span, so a trace can be found by shop and
+      // by route. Deliberately only these two — §4 keeps names and emails out
+      // of a trace backend, which is a separate system with its own access
+      // model. `storeId` comes from the request context rather than the URL, so
+      // it is the store the request was actually scoped to.
+      annotateRequestSpan({ storeId: getRequestContext()?.storeId, route });
 
       // Health checks would otherwise be most of the log by volume: a load
       // balancer polls readiness every few seconds forever, and none of those

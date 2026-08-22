@@ -1,5 +1,6 @@
 import type { LoggerService, LogLevel } from "@nestjs/common";
 import { getRequestContext } from "../../common/context/request-context.js";
+import { currentTraceIds } from "./tracing.js";
 
 /**
  * Structured logging (plan §14.5, NFR-OPS-01).
@@ -92,6 +93,10 @@ export class JsonLogger implements LoggerService {
       ...(ctx?.requestId ? { requestId: ctx.requestId } : {}),
       ...(ctx?.userId ? { userId: ctx.userId } : {}),
       ...(ctx?.storeId ? { storeId: ctx.storeId } : {}),
+      // What joins this line to the trace that produced it. Absent rather than
+      // empty when tracing is off, so the field means something wherever it
+      // appears.
+      ...currentTraceIds(),
       ...(fields ?? {}),
     };
 

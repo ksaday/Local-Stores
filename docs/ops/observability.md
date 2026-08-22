@@ -120,13 +120,46 @@ accessibility gate leaked a live session cookie into CI output exactly this way.
 
 ## 4. Traces
 
-OpenTelemetry, sampled — 100% of errors and slow requests, a low fixed rate of
-the rest. The span that earns its keep is BFF → API → Postgres, because the
-BFF hop is invisible in API logs: a slow page can be a slow query or a slow
-proxy, and without the trace both look identical from either end.
+**Built**, across both services. Off entirely unless `OTEL_EXPORTER_OTLP_ENDPOINT`
+is set — no SDK, no module patching — because recording spans nobody collects is
+overhead with no upside. `OTEL_TRACES_CONSOLE=1` prints them instead, which is
+how this gets exercised without standing up a collector.
 
-Span attributes should carry `store_id` and route template, never a customer's
-name or email.
+**The sampling policy cannot be a Sampler.** OpenTelemetry decides at span
+*start*, and nothing then knows whether a request will throw or take four
+seconds; a head sampler at 5% keeps 5% of errors, which is precisely backwards.
+The decision moved into a `SpanProcessor` that holds a trace's spans until its
+server span ends and then keeps or drops **the whole trace** — a trace with
+holes is worse than none, because it looks complete while missing the query that
+explains it.
+
+**The baseline rate is a hash of the trace id, not a coin flip.** The BFF and the
+API decide independently with nothing passing between them but a header, so
+random draws would disagree about half the time and the baseline sample would be
+full of traces that stop at the proxy. Both call the same `sampledByTraceId` in
+`@bba/shared` and reach the same answer for free. Errors and slow requests are
+still decided locally and *can* be one-sided; that trade is deliberate, since
+half a failing trace with the failing half guaranteed beats a whole trace of a
+request nobody cares about.
+
+**Database spans come from `withTenantContext`, not a driver instrumentation.**
+`@opentelemetry/instrumentation-pg` patches a module this codebase does not
+depend on — Prisma uses its own query engine — and produced traces with no
+database spans at all. `@prisma/instrumentation` at the version matching Prisma
+5.22 bundles OpenTelemetry 1.x and crashes against the 2.x SDK here. Wrapping
+the tenant transaction is better anyway: RLS context is transaction-local, so the
+transaction is the boundary that decides what the planner does (ADR 0003), and
+all 240 tenant-scoped call sites already funnel through it.
+
+Span attributes carry `store_id`, the route template, and the RLS scope
+(`platform` / `store` / `user` / `anonymous`) — never a customer's name or
+email. Every log line carries `traceId` and `spanId`, so a log and its trace are
+one search rather than two systems joined by timestamp.
+
+> **`NEXT_OTEL_VERBOSE=1` is required on the web service**, and its absence is
+> silent: Next suppresses `fetch` spans without it, so the BFF and the API trace
+> separately, both look healthy, and the hop between them — the entire reason
+> §4 exists — is missing with nothing to say so.
 
 ---
 
@@ -174,6 +207,11 @@ In order, because each makes the next one meaningful:
    completions series, and a ratio over a missing numerator is *no data*, which
    does not alert. The total outage was the one case that would have stayed
    silent.
-5. **Traces.** Genuinely useful, and the only one of these that can wait.
+5. ~~**Traces.**~~ **Done.** Tail sampling in a span processor rather than a
+   sampler, whole traces rather than spans, and a shared trace-id hash so the
+   two services agree without coordinating. Database spans come from the tenant
+   transaction, which is the right unit here and also the only one available —
+   see above for the two instrumentation packages that do not work against this
+   stack.
 
 Runbooks for every alert that pages a human are in [runbooks.md](runbooks.md).
