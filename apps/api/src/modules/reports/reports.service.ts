@@ -316,6 +316,94 @@ export class ReportsService {
       total,
     };
   }
+
+  /**
+   * What the shop is holding, and what it is worth (FR-REP-03).
+   *
+   * A snapshot rather than a window: stock is a fact about now, and there is no
+   * history of it to range over — the movement ledger carries that, and reading
+   * it back to a date is a different report from this one.
+   *
+   * Live rather than rolled up, and safe to be: this is bounded by the size of
+   * the catalogue, not by how long the shop has traded. A shop with a thousand
+   * lines has a thousand rows here whether it opened last week or in 1997,
+   * which is exactly the property ADR 0003's queries lack.
+   *
+   * Cost is optional in the catalogue, so the valuation covers only the lines
+   * that have one. The uncosted lines are counted and reported beside it — a
+   * total that silently omitted them would read as complete and be wrong.
+   */
+  async stockValuation(storeId: string, limit = 10): Promise<StockValuation> {
+    const rows = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<
+        {
+          variant_id: string;
+          name: string;
+          sku: string | null;
+          on_hand: number;
+          cost_cents: number | null;
+          price_cents: number;
+        }[]
+      >`
+        SELECT sl.variant_id, p.name, v.sku, sl.on_hand, v.cost_cents, v.price_cents
+        FROM stock_levels sl
+        JOIN product_variants v ON v.id = sl.variant_id
+        JOIN products p ON p.id = v.product_id
+        WHERE sl.store_id = ${storeId}
+          AND sl.tracked = true
+          AND sl.on_hand > 0
+          AND v.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+      `,
+    );
+
+    let costCents = 0;
+    let retailCents = 0;
+    let unitsOnHand = 0;
+    let linesWithoutCost = 0;
+    let unitsWithoutCost = 0;
+
+    for (const r of rows) {
+      unitsOnHand += r.on_hand;
+      retailCents += r.on_hand * r.price_cents;
+      if (r.cost_cents === null) {
+        linesWithoutCost += 1;
+        unitsWithoutCost += r.on_hand;
+      } else {
+        costCents += r.on_hand * r.cost_cents;
+      }
+    }
+
+    // Ranked by retail, which every line has.
+    //
+    // Not "cost where known, retail otherwise": those are different measures,
+    // and retail runs roughly double cost here, so mixing them on one axis
+    // floats every uncosted line to the top. The first version did exactly
+    // that and put three uncosted lines in the top three. Ranking on the
+    // measure that is complete keeps the comparison honest; the cost column
+    // still says "no cost" where it is missing.
+    const top = rows
+      .map((r) => ({
+        variantId: r.variant_id,
+        name: r.name,
+        sku: r.sku,
+        onHand: r.on_hand,
+        costCents: r.cost_cents === null ? null : r.on_hand * r.cost_cents,
+        retailCents: r.on_hand * r.price_cents,
+      }))
+      .sort((a, b) => b.retailCents - a.retailCents)
+      .slice(0, limit);
+
+    return {
+      linesCounted: rows.length,
+      unitsOnHand,
+      costCents,
+      linesWithoutCost,
+      unitsWithoutCost,
+      retailCents,
+      top,
+    };
+  }
 }
 
 
@@ -335,6 +423,30 @@ export interface StoreSummary {
    * reconcile against a till that is fifteen minutes ahead of it.
    */
   computedAt: string | null;
+}
+
+/** What is on the shelves, and what it is worth. */
+export interface StockValuation {
+  /** Lines that are tracked and hold something. */
+  linesCounted: number;
+  unitsOnHand: number;
+  /** At cost. Covers only the lines that have a cost recorded. */
+  costCents: number;
+  /** How many of those lines have no cost, and so are missing from the above. */
+  linesWithoutCost: number;
+  unitsWithoutCost: number;
+  /** At what the shop sells them for. Every line has a price, so this is whole. */
+  retailCents: number;
+  top: StockValuationLine[];
+}
+
+export interface StockValuationLine {
+  variantId: string;
+  name: string;
+  sku: string | null;
+  onHand: number;
+  costCents: number | null;
+  retailCents: number;
 }
 
 /** One person's history with this shop. */

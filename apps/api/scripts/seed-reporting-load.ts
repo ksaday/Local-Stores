@@ -183,10 +183,24 @@ async function main() {
 
   await prisma.$executeRawUnsafe(`
     INSERT INTO product_variants (id, product_id, store_id, sku, attrs, price_cents,
-                                  is_default, active, created_at, updated_at)
+                                  cost_cents, is_default, active, created_at, updated_at)
     SELECT gen_random_uuid()::text, p.id, '${STORE_ID}', 'LOAD-SKU-' || p.slug,
-           '{}'::jsonb, (300 + floor(random() * 4700))::int, true, true, now(), now()
-    FROM products p WHERE p.store_id = '${STORE_ID}'`);
+           '{}'::jsonb, v.price,
+           -- A cost on most lines but not all: it is optional in the catalog,
+           -- and a valuation report that assumed every line had one would
+           -- quietly under-count instead of saying what it could not value.
+           CASE WHEN random() < 0.85 THEN (v.price * (0.45 + random() * 0.25))::int END,
+           true, true, now(), now()
+    FROM products p
+    CROSS JOIN LATERAL (SELECT (300 + floor(random() * 4700))::int AS price) v
+    WHERE p.store_id = '${STORE_ID}'`);
+
+  // Something on the shelves to value.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO stock_levels (variant_id, store_id, on_hand, reserved, reorder_point, tracked, updated_at)
+    SELECT v.id, '${STORE_ID}', floor(random() * 400)::int, 0, 30, true, now()
+    FROM product_variants v WHERE v.store_id = '${STORE_ID}'
+    ON CONFLICT (variant_id) DO NOTHING`);
 
   const variants = await prisma.$queryRawUnsafe<{ id: string; name: string; price: number }[]>(
     `SELECT v.id, p.name, v.price_cents AS price
@@ -258,6 +272,9 @@ async function main() {
   // at against a realistic volume rather than five hand-made orders. Without
   // it the fixture is measurable but not viewable, and half of what it is for
   // is seeing whether a chart of three years still reads.
+  //
+  // `seed:dev` clears rows belonging to the accounts it owns wherever they
+  // are, including this membership — so run this one second if you run both.
   await prisma.$executeRawUnsafe(`
     INSERT INTO store_memberships (id, store_id, user_id, role, status, created_at, updated_at)
     SELECT gen_random_uuid()::text, '${STORE_ID}', u.id, 'STORE_ADMIN', 'ACTIVE', now(), now()

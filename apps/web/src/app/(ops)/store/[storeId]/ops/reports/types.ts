@@ -35,6 +35,25 @@ export const RANGES = {
 
 export type RangeKey = keyof typeof RANGES;
 
+export interface StockValuationLine {
+  variantId: string;
+  name: string;
+  sku: string | null;
+  onHand: number;
+  costCents: number | null;
+  retailCents: number;
+}
+
+export interface StockValuation {
+  linesCounted: number;
+  unitsOnHand: number;
+  costCents: number;
+  linesWithoutCost: number;
+  unitsWithoutCost: number;
+  retailCents: number;
+  top: StockValuationLine[];
+}
+
 export interface ProductSales {
   variantId: string | null;
   name: string;

@@ -71,6 +71,19 @@ export class ReportsController {
     return this.reports.customers(storeId, query);
   }
 
+  /**
+   * Stock on hand and what it is worth.
+   *
+   * `inventory:read`, not `reports:sales` — this is a stockroom question, and
+   * the person who counts the shelves should be able to ask it without also
+   * being trusted with the takings.
+   */
+  @Get("stock")
+  @RequirePermission("inventory:read")
+  stock(@Param("storeId") storeId: string) {
+    return this.reports.stockValuation(storeId);
+  }
+
   @Get("top-products")
   @RequirePermission("reports:sales")
   topProducts(

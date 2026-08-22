@@ -11,6 +11,7 @@ import {
   type ProductSales,
   type RangeKey,
   type SalesReport,
+  type StockValuation,
 } from "./types";
 
 export const metadata: Metadata = { title: "Reports" };
@@ -31,7 +32,7 @@ export default async function ReportsPage({
   const from = new Date(to.getTime() - (days - 1) * 86_400_000);
   const query = `from=${iso(from)}&to=${iso(to)}&grain=${grain}`;
 
-  const [store, report, products] = await Promise.all([
+  const [store, report, products, stock] = await Promise.all([
     api<Store>(`/stores/${storeId}`),
     api<SalesReport>(`/stores/${storeId}/reports/sales?${query}`).catch((err) => {
       // A cashier with no `reports:sales` reaches the page through the nav
@@ -43,6 +44,10 @@ export default async function ReportsPage({
     api<ProductSales[]>(
       `/stores/${storeId}/reports/top-products?${query.replace(/&grain=\w+/, "")}&limit=10`,
     ).catch((err) => {
+      if (err instanceof ApiError && err.status === 403) return null;
+      throw err;
+    }),
+    api<StockValuation>(`/stores/${storeId}/reports/stock`).catch((err) => {
       if (err instanceof ApiError && err.status === 403) return null;
       throw err;
     }),
@@ -158,6 +163,95 @@ export default async function ReportsPage({
           </div>
         )}
       </Card>
+
+      {stock && (
+        <Card
+          title="Stock on hand"
+          // Said on the card, because everything above it is filtered by the
+          // range control and this is not. A snapshot under a date filter
+          // invites somebody to read it as "stock during March".
+          description="What is on the shelves right now — the period above doesn't apply."
+        >
+          {stock.linesCounted === 0 ? (
+            <p className="text-sm text-ink-muted">
+              Nothing tracked has stock on it. Lines are counted here once tracking is on and
+              there is something on the shelf.
+            </p>
+          ) : (
+            <>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <p className="text-sm text-ink-muted">At cost</p>
+                  <p className="mt-1 text-2xl font-semibold text-ink">
+                    {money(stock.costCents, currency)}
+                  </p>
+                  {stock.linesWithoutCost > 0 && (
+                    // The uncosted lines are named rather than dropped: a total
+                    // that silently omitted them would read as complete.
+                    <p className="mt-1 text-sm text-ink-muted">
+                      excludes {stock.linesWithoutCost}{" "}
+                      {stock.linesWithoutCost === 1 ? "line" : "lines"} with no cost recorded
+                      {" "}({stock.unitsWithoutCost.toLocaleString()} units)
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm text-ink-muted">At retail</p>
+                  <p className="mt-1 text-2xl font-semibold text-ink">
+                    {money(stock.retailCents, currency)}
+                  </p>
+                  <p className="mt-1 text-sm text-ink-muted">every line has a price</p>
+                </div>
+                <div>
+                  <p className="text-sm text-ink-muted">On the shelves</p>
+                  <p className="mt-1 text-2xl font-semibold text-ink">
+                    {stock.unitsOnHand.toLocaleString()}
+                  </p>
+                  <p className="mt-1 text-sm text-ink-muted">
+                    across {stock.linesCounted.toLocaleString()}{" "}
+                    {stock.linesCounted === 1 ? "line" : "lines"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 overflow-x-auto">
+                <table className="w-full min-w-[32rem] border-collapse text-sm">
+                  <caption className="sr-only">Most valuable stock lines</caption>
+                  <thead>
+                    <tr className="border-b border-line text-left">
+                      <th scope="col" className="py-2 pr-4 font-medium text-ink">
+                        Line
+                      </th>
+                      <Th>On hand</Th>
+                      <Th>At cost</Th>
+                      <Th>At retail</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stock.top.map((line) => (
+                      <tr key={line.variantId} className="border-b border-line last:border-0">
+                        <th scope="row" className="py-2 pr-4 text-left font-normal text-ink">
+                          {line.name}
+                          {line.sku && <span className="ml-2 text-ink-muted">{line.sku}</span>}
+                        </th>
+                        <Td>{line.onHand.toLocaleString()}</Td>
+                        <Td>
+                          {line.costCents === null ? (
+                            <span className="text-ink-muted">no cost</span>
+                          ) : (
+                            money(line.costCents, currency)
+                          )}
+                        </Td>
+                        <Td>{money(line.retailCents, currency)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
 
       {/* The table twin. Every value in the chart is here, in text, which is
           what makes the picture optional rather than load-bearing. */}

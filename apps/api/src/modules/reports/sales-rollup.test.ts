@@ -41,6 +41,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await admin.$executeRaw`DELETE FROM stock_levels WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_subscriptions WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
@@ -69,6 +70,7 @@ async function seed(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  await admin.$executeRaw`DELETE FROM stock_levels WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_subscriptions WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM store_customers WHERE store_id = ${STORE}`;
   await admin.$executeRaw`DELETE FROM daily_store_product_sales WHERE store_id = ${STORE}`;
@@ -202,6 +204,48 @@ async function customer(name: string): Promise<string> {
     name,
   );
   return id;
+}
+
+/** Puts stock on the shelf for a variant, optionally with a cost. */
+async function stock(
+  variantId: string,
+  input: { onHand: number; cost?: number | null; tracked?: boolean },
+): Promise<void> {
+  if (input.cost !== undefined) {
+    await admin.$executeRawUnsafe(
+      `UPDATE product_variants SET cost_cents = $2 WHERE id = $1`,
+      variantId,
+      input.cost,
+    );
+  }
+  await admin.$executeRawUnsafe(
+    `INSERT INTO stock_levels (variant_id,store_id,on_hand,reserved,tracked,updated_at)
+     VALUES ($1,$2,$3,0,$4,now())
+     ON CONFLICT (variant_id) DO UPDATE SET on_hand = EXCLUDED.on_hand, tracked = EXCLUDED.tracked`,
+    variantId,
+    STORE,
+    input.onHand,
+    input.tracked ?? true,
+  );
+}
+
+/**
+ * Noon in the store's own timezone, N days ago, as an instant.
+ *
+ * Not `new Date()` minus days: that anchors on UTC, and this shop is in
+ * Chicago. Between UTC midnight and dawn the two calendars disagree, so a test
+ * built on the UTC date files "today" under the store's tomorrow and reads
+ * zero. Postgres does the conversion so daylight saving is handled too.
+ */
+async function storeNoon(daysAgo: number): Promise<string> {
+  const [row] = await admin.$queryRawUnsafe<{ t: Date }[]>(
+    `SELECT ((((now() AT TIME ZONE s.timezone)::date - $2::int) + time '12:00')
+             AT TIME ZONE s.timezone) AS t
+     FROM stores s WHERE s.id = $1`,
+    STORE,
+    daysAgo,
+  );
+  return row!.t.toISOString();
 }
 
 const WINDOW = { from: "2026-03-01", to: "2026-03-31" };
@@ -601,14 +645,11 @@ describe("the dashboard summary", () => {
   it("totals today, the last seven days and the last thirty", async () => {
     // Dated relative to now, because the summary's windows are anchored to the
     // store's today rather than to a fixed date.
-    const day = (ago: number) =>
-      new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10) + "T18:00:00Z";
-
-    await order({ placedAt: day(0), subtotal: 1000 });
-    await order({ placedAt: day(3), subtotal: 2000 });
-    await order({ placedAt: day(20), subtotal: 4000 });
+    await order({ placedAt: await storeNoon(0), subtotal: 1000 });
+    await order({ placedAt: await storeNoon(3), subtotal: 2000 });
+    await order({ placedAt: await storeNoon(20), subtotal: 4000 });
     // Outside every window.
-    await order({ placedAt: day(60), subtotal: 8000 });
+    await order({ placedAt: await storeNoon(60), subtotal: 8000 });
 
     const from = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
     const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
@@ -742,10 +783,8 @@ describe("the platform console's figures", () => {
   it("counts a shop's trade as GMV, and does not call it revenue", async () => {
     // BBA takes no cut (§18.6), so this figure is the shops doing well rather
     // than the platform earning. The test exists so that stays true in code.
-    const day = (ago: number) =>
-      new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10) + "T18:00:00Z";
-    await order({ placedAt: day(1), subtotal: 5000 });
-    await order({ placedAt: day(2), subtotal: 3000 });
+    await order({ placedAt: await storeNoon(1), subtotal: 5000 });
+    await order({ placedAt: await storeNoon(2), subtotal: 3000 });
 
     const from = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
     const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
@@ -786,5 +825,60 @@ describe("the platform console's figures", () => {
     const summary = await platform.summary(30);
     // The fixture store is ACTIVE, so at minimum it is in there.
     expect(summary.stores.active).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("what the shelves are worth", () => {
+  it("values stock at cost and at retail", async () => {
+    const bread = await variant("Sourdough", 500);
+    await stock(bread, { onHand: 10, cost: 200 });
+
+    const v = await reports.stockValuation(STORE);
+    expect(v.linesCounted).toBe(1);
+    expect(v.unitsOnHand).toBe(10);
+    expect(v.costCents).toBe(2000);
+    expect(v.retailCents).toBe(5000);
+  });
+
+  it("says what it could not value rather than quietly omitting it", async () => {
+    // Cost is optional in the catalogue. A total that skipped the uncosted
+    // lines would read as complete and be wrong by however much they are worth.
+    const costed = await variant("Costed", 500);
+    const uncosted = await variant("Uncosted", 900);
+    await stock(costed, { onHand: 4, cost: 100 });
+    await stock(uncosted, { onHand: 7, cost: null });
+
+    const v = await reports.stockValuation(STORE);
+    expect(v.costCents).toBe(400);
+    expect(v.linesWithoutCost).toBe(1);
+    expect(v.unitsWithoutCost).toBe(7);
+    // Retail is whole, because every line has a price.
+    expect(v.retailCents).toBe(4 * 500 + 7 * 900);
+  });
+
+  it("ignores untracked lines and empty shelves", async () => {
+    const untracked = await variant("Made to order", 500);
+    const empty = await variant("Sold out", 500);
+    await stock(untracked, { onHand: 99, cost: 100, tracked: false });
+    await stock(empty, { onHand: 0, cost: 100 });
+
+    // A shop selling made-to-order items keeps no count, and nothing on the
+    // shelf is worth nothing — neither belongs in a valuation.
+    expect((await reports.stockValuation(STORE)).linesCounted).toBe(0);
+  });
+
+  it("ranks on retail, so costed and uncosted lines compare fairly", async () => {
+    const small = await variant("Cheap", 100);
+    const big = await variant("Dear", 5000);
+    const uncostedBig = await variant("Dear but uncosted", 4000);
+    await stock(small, { onHand: 5, cost: 50 });
+    await stock(big, { onHand: 20, cost: 2500 });
+    await stock(uncostedBig, { onHand: 10, cost: null });
+
+    const v = await reports.stockValuation(STORE);
+    // Ranking on "cost where known, retail otherwise" mixes two measures that
+    // differ by the margin, and floats every uncosted line to the top.
+    // "Dear" is worth 100,000 at retail, the uncosted line 40,000.
+    expect(v.top.map((t) => t.name)).toEqual(["Dear", "Dear but uncosted", "Cheap"]);
   });
 });
