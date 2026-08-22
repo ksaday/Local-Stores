@@ -87,10 +87,15 @@ Structured JSON, one object per line, at the boundaries — request completed,
 job finished, external call returned. §14.5 sets retention at 90 days hot and
 a year archived.
 
-Today the API uses Nest's default logger, which writes human-readable lines and
-is not machine-parseable. That is the second gap.
+**Built.** `infra/observability/logger.ts` replaces Nest's default logger via
+`app.useLogger()`, so third-party and framework lines land in the same stream
+rather than only the lines written by hand. `LOG_FORMAT` (`json`|`pretty`) and
+`LOG_LEVEL` override the NODE_ENV defaults — prose locally, JSON in production —
+so the shipping format can be run on a laptop. A log pipeline that has only ever
+been exercised by deploying to it is not one anybody has tested.
 
-Every line must carry `requestId`. This part already works: a middleware
+Every line carries `requestId`, pulled from the AsyncLocalStorage request
+context rather than passed by call sites: a middleware
 generates or accepts one, returns it as `x-request-id`, and the Problem Details
 error body includes it, so a shop reporting "it said something went wrong at
 10:42" can hand over a string that finds the request.
@@ -140,10 +145,15 @@ storefront offline; a shop can still take cash.
 
 In order, because each makes the next one meaningful:
 
-1. **Structured JSON logging with `requestId`.** Everything else is easier to
-   debug once this exists, and it is the smallest change.
-2. **`http_request_duration` by route template.** Three SLOs are unmeasurable
-   without it.
+1. ~~**Structured JSON logging with `requestId`.**~~ **Done.** One JSON object
+   per line, request identity attached ambiently, `error.message` only.
+2. ~~**`http_request_duration` by route template.**~~ **Done.** Recorded in
+   middleware on `res.on("finish")` — not an interceptor, which never runs for
+   the 404s and guard rejections most worth counting. Buckets have edges at
+   300ms and 600ms so the two latency SLOs are counted rather than interpolated.
+   Served from a **separate port** (`METRICS_PORT`, default 9464) that the load
+   balancer does not route: `/metrics` describes the inside of the system, and
+   "nobody links to it" is not a control.
 3. **`outbox_dead_lettered`, `queue_depth`, `rollup_staleness`.** The pipeline
    gauges behind the alerts that page. The first is already computed and thrown
    away.

@@ -1,7 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
+import { ConfigModule, ConfigService } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
-import { validateEnv } from "./config/env.js";
+import { validateEnv, type Env } from "./config/env.js";
 import { PrismaModule } from "./infra/prisma/prisma.module.js";
 import { MailerModule } from "./infra/mailer/mailer.module.js";
 import { OutboxModule } from "./infra/outbox/outbox.module.js";
@@ -24,6 +24,8 @@ import { PaymentsModule } from "./modules/payments/payments.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { StorefrontModule } from "./modules/storefront/storefront.module.js";
 import { StoresModule } from "./modules/stores/stores.module.js";
+import { JsonLogger, loggerOptionsFrom } from "./infra/observability/logger.js";
+import { RequestLoggingMiddleware } from "./infra/observability/request-logging.middleware.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard.js";
 import { StoreScopeGuard } from "./common/guards/store-scope.guard.js";
@@ -67,11 +69,28 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: StoreScopeGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // One logger instance, shared by the middleware and by anything that
+    // injects it, so a level change applies everywhere at once.
+    {
+      provide: JsonLogger,
+      useFactory: (config: ConfigService<Env, true>) =>
+        new JsonLogger(
+          loggerOptionsFrom({
+            NODE_ENV: config.get("NODE_ENV", { infer: true }),
+            LOG_FORMAT: config.get("LOG_FORMAT", { infer: true }),
+            LOG_LEVEL: config.get("LOG_LEVEL", { infer: true }),
+          }),
+        ),
+      inject: [ConfigService],
+    },
   ],
+  exports: [JsonLogger],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     // Express 5 / path-to-regexp v8 requires named wildcards; bare "*" is legacy.
-    consumer.apply(RequestContextMiddleware).forRoutes("{*path}");
+    // Context first: the logging middleware reads requestId from it, and a
+    // middleware cannot see a scope opened after its own.
+    consumer.apply(RequestContextMiddleware, RequestLoggingMiddleware).forRoutes("{*path}");
   }
 }

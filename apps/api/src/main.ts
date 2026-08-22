@@ -8,6 +8,8 @@ import cookieParser from "cookie-parser";
 import express from "express";
 import helmet from "helmet";
 import { AppModule } from "./app.module.js";
+import { JsonLogger } from "./infra/observability/logger.js";
+import { startMetricsServer } from "./infra/observability/metrics-server.js";
 import { ProblemDetailsFilter } from "./common/filters/problem-details.filter.js";
 import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor.js";
 import type { Env } from "./config/env.js";
@@ -27,6 +29,11 @@ async function bootstrap(): Promise<void> {
     rawBody: true,
   });
   const config = app.get(ConfigService<Env, true>);
+
+  // Swap Nest's own logger for the structured one, so framework lines (route
+  // mapping, shutdown, unhandled errors) are JSON too rather than the only
+  // prose left in the stream.
+  app.useLogger(app.get(JsonLogger));
 
   app.use(helmet());
   app.use(cookieParser());
@@ -97,9 +104,20 @@ async function bootstrap(): Promise<void> {
   app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
   app.enableShutdownHooks();
 
+  // Metrics on their own port, deliberately.
+  //
+  // `/metrics` on the main listener would be reachable by anyone who can reach
+  // the API, and it describes the inside of the system: route names, latencies,
+  // event-loop health. A separate port is simply not routed by the load
+  // balancer, which is a stronger boundary than a path nobody links to.
+  startMetricsServer(config.get("METRICS_PORT", { infer: true }), app.get(JsonLogger));
+
   const port = config.get("PORT");
   await app.listen(port);
-  new Logger("bootstrap").log(`API listening on :${port} (${config.get("NODE_ENV")})`);
+  app.get(JsonLogger).event("log", "API listening", {
+    port,
+    env: config.get("NODE_ENV"),
+  }, "bootstrap");
 }
 
 void bootstrap();

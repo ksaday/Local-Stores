@@ -8,6 +8,21 @@ import { z } from "zod";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3001),
+  /**
+   * The Prometheus scrape port. Separate from PORT on purpose: the load
+   * balancer routes one and not the other, so metrics are reachable from
+   * inside the network and from nowhere else.
+   */
+  METRICS_PORT: z.coerce.number().int().positive().default(9464),
+
+  /**
+   * Log format. Defaults to prose locally and JSON in production, which is
+   * almost always what you want — but it is a setting rather than an inference
+   * so the shipping format can be exercised on a laptop. A log pipeline that
+   * has only ever been tested by deploying to it is not tested.
+   */
+  LOG_FORMAT: z.enum(["json", "pretty"]).optional(),
+  LOG_LEVEL: z.enum(["debug", "verbose", "log", "warn", "error"]).optional(),
 
   DATABASE_URL: z.string().url(),
   /**
