@@ -75,7 +75,7 @@ async function main() {
     const pages = await discoverPages(browser);
     console.log(`Auditing ${pages.length} pages at ${BASE}\n`);
 
-    for (const { path, needsAuth, label } of pages) {
+    for (const { path, needsAuth, label, expectStatus = 200 } of pages) {
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
       if (needsAuth) await signIn(context, needsAuth === "platform" ? PLATFORM_EMAIL : OWNER_EMAIL);
 
@@ -91,8 +91,12 @@ async function main() {
       // A redirected or missing page audits clean and proves nothing, so it is
       // a failure of the gate rather than a pass.
       const landed = new URL(page.url()).pathname;
-      if (!response || response.status() >= 400) {
-        results.push({ path, label, error: `HTTP ${response?.status() ?? "no response"}` });
+      // An error page is a page people see, so it is audited like any other —
+      // which means the gate has to tolerate the status it is supposed to
+      // return, while still failing on one it is not.
+      const status = response?.status() ?? 0;
+      if (status !== expectStatus) {
+        results.push({ path, label, error: `HTTP ${status || "no response"}, expected ${expectStatus}` });
         await context.close();
         continue;
       }
@@ -386,6 +390,9 @@ async function discoverPages(browser) {
     pages.push({ path: "/notifications", label: "notifications", needsAuth: true });
 
     // The platform console, as the Super Admin.
+    // The 404, which nothing had ever looked at because it did not exist.
+    pages.push({ path: "/no-such-page", label: "page not found", expectStatus: 404 });
+
     pages.push({ path: "/platform", label: "platform console", needsAuth: "platform" });
     pages.push({ path: "/platform/applications", label: "applications", needsAuth: "platform" });
     pages.push({ path: "/platform/stores", label: "platform stores", needsAuth: "platform" });

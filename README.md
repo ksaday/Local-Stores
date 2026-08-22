@@ -48,6 +48,12 @@ validation, AsyncLocalStorage request context.
 transaction context. The cross-tenant isolation suite runs as the restricted
 `bba_app` role and is the release gate.
 
+No dead ends (§6.4): a page that is not there renders a real 404 with a way
+onward, in two versions — a customer gets the shop directory, a clerk gets
+their queue and keeps the nav they were using. Next's own "404: This page could
+not be found" was what every removed product and stale bookmark landed on until
+then.
+
 A shop can read its own staff *and its own customers* — the second half was
 missing until migration 25, and the symptom was the order queue rendering every
 account order as "Guest" because the `users` join silently returned nothing.
