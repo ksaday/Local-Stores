@@ -18,6 +18,10 @@ resource "aws_secretsmanager_secret" "app" {
     "stripe-secret-key",
     "stripe-webhook-secret",
     "ses-credentials",
+    # The RLS-restricted role's password, used by the pooler to reach RDS and
+    # by every client to reach the pooler. Distinct from the AWS-managed master
+    # password, which only migrations use.
+    "postgres-app-password",
   ])
 
   name        = "${var.name}/${each.key}"
@@ -55,6 +59,26 @@ resource "aws_secretsmanager_secret" "database_url" {
   tags        = merge(var.tags, { Name = "${var.name}/database-url" })
 }
 
+/**
+ * A second database URL, straight to RDS, for migrations only.
+ *
+ * `prisma migrate deploy` cannot run through a transaction pooler. It takes an
+ * advisory lock to serialise concurrent deploys and issues DDL that assumes a
+ * stable session — both are session-scoped, and transaction pooling hands the
+ * connection to somebody else at every COMMIT. The lock would be taken and lost
+ * on a different connection than the one still migrating.
+ *
+ * So the migration task gets this one and the services get the pooled one. Two
+ * secrets rather than one URL with a flag, because the difference has to be
+ * impossible to get wrong from a task definition.
+ */
+resource "aws_secretsmanager_secret" "database_url_direct" {
+  name                    = "${var.name}/database-url-direct"
+  description             = "Bypasses PgBouncer. Migrations only — see the module comment."
+  recovery_window_in_days = 7
+  tags                    = merge(var.tags, { Name = "${var.name}/database-url-direct" })
+}
+
 resource "aws_secretsmanager_secret" "redis_url" {
   name        = "${var.name}/redis-url"
   description = "rediss:// — transit encryption is on, so the scheme is not redis://."
@@ -65,7 +89,7 @@ resource "aws_secretsmanager_secret" "redis_url" {
 # ── Image repositories ───────────────────────────────────────────────────────
 
 resource "aws_ecr_repository" "this" {
-  for_each = toset(["api", "web"])
+  for_each = toset(["api", "web", "pgbouncer"])
 
   name = "${var.name}/${each.key}"
 

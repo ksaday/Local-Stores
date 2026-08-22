@@ -22,3 +22,12 @@ output "redis_endpoint" {
 output "redis_port" {
   value = aws_elasticache_replication_group.this.port
 }
+
+output "postgres_security_group_id" {
+  description = "compute attaches the pooler's ingress rule to this."
+  value       = aws_security_group.postgres.id
+}
+
+output "redis_security_group_id" {
+  value = aws_security_group.redis.id
+}

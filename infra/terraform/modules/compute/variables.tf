@@ -126,6 +126,74 @@ variable "media_bucket_arn" {
   default     = null
 }
 
+variable "pgbouncer_image" {
+  description = "ECR repository for the pooler image, built from infra/docker/pgbouncer."
+  type        = string
+}
+
+variable "pgbouncer_image_tag" {
+  type    = string
+  default = "latest"
+}
+
+variable "postgres_security_group_id" {
+  description = "From the data module. compute attaches the pooler's ingress rule to it."
+  type        = string
+}
+
+variable "redis_security_group_id" {
+  type = string
+}
+
+variable "postgres_host" {
+  description = "RDS endpoint. PgBouncer is the only thing that connects to it."
+  type        = string
+}
+
+variable "postgres_port" {
+  type    = number
+  default = 5432
+}
+
+variable "postgres_app_user" {
+  description = "The RLS-restricted role. Never the migration role."
+  type        = string
+  default     = "bba_app"
+}
+
+variable "postgres_password_secret_arn" {
+  description = "Password for postgres_app_user. Injected at start and written only to tmpfs."
+  type        = string
+}
+
+variable "pgbouncer_cpu" {
+  type    = number
+  default = 512
+}
+
+variable "pgbouncer_memory" {
+  type    = number
+  default = 1024
+}
+
+variable "pgbouncer_desired_count" {
+  description = "More than one. This is in the path of every query."
+  type        = number
+  default     = 2
+}
+
+variable "pgbouncer_max_client_conn" {
+  description = "What the pooler accepts. Above §14.4's worst case so the pooler is never what refuses."
+  type        = number
+  default     = 2000
+}
+
+variable "pgbouncer_pool_size" {
+  description = "Server connections per database. This is the number RDS actually sees."
+  type        = number
+  default     = 25
+}
+
 variable "origin_secret" {
   description = <<-EOT
     Shared secret CloudFront sends and the load balancer requires. Narrowing

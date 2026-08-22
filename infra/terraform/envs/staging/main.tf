@@ -92,8 +92,6 @@ module "data" {
   vpc_id          = module.network.vpc_id
   data_subnet_ids = module.network.data_subnet_ids
 
-  app_security_group_id = module.compute.tasks_security_group_id
-
   # Smaller and single-AZ, per §14.2's table. Load testing runs here, so this
   # is the number to raise before drawing conclusions from a load test — a
   # t4g.medium will find a ceiling that says nothing about db.m7g.large.
@@ -154,6 +152,20 @@ module "compute" {
   secret_arns                = module.secrets.all_secret_arns
 
   origin_secret = random_password.origin_secret.result
+
+  # The pooler, and the rules that make it the only path to Postgres.
+  pgbouncer_image              = module.secrets.pgbouncer_repository_url
+  pgbouncer_image_tag          = var.pgbouncer_image_tag
+  postgres_host                = module.data.postgres_endpoint
+  postgres_security_group_id   = module.data.postgres_security_group_id
+  redis_security_group_id      = module.data.redis_security_group_id
+  postgres_password_secret_arn = module.secrets.postgres_app_password_arn
+
+  # One pooler and a small pool: staging has one API task, so the multiplexing
+  # ratio §14.4 cares about does not arise. Raise both for a load test, or the
+  # test measures the pooler rather than the platform.
+  pgbouncer_desired_count = 1
+  pgbouncer_pool_size     = 10
 
   media_bucket_arn = module.storage.media_bucket_arn
 

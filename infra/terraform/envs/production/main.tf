@@ -85,8 +85,6 @@ module "data" {
   vpc_id          = module.network.vpc_id
   data_subnet_ids = module.network.data_subnet_ids
 
-  app_security_group_id = module.compute.tasks_security_group_id
-
   # §14.4's baseline.
   db_instance_class        = "db.m7g.large"
   db_allocated_storage     = 100
@@ -145,6 +143,14 @@ module "compute" {
   secret_arns                = module.secrets.all_secret_arns
 
   origin_secret = random_password.origin_secret.result
+
+  # The pooler, and the rules that make it the only path to Postgres.
+  pgbouncer_image              = module.secrets.pgbouncer_repository_url
+  pgbouncer_image_tag          = var.pgbouncer_image_tag
+  postgres_host                = module.data.postgres_endpoint
+  postgres_security_group_id   = module.data.postgres_security_group_id
+  redis_security_group_id      = module.data.redis_security_group_id
+  postgres_password_secret_arn = module.secrets.postgres_app_password_arn
 
   media_bucket_arn = module.storage.media_bucket_arn
 

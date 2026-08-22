@@ -2,11 +2,6 @@ variable "name" { type = string }
 variable "vpc_id" { type = string }
 variable "data_subnet_ids" { type = list(string) }
 
-variable "app_security_group_id" {
-  description = "The ECS tasks' security group. Access is granted to this, never to a CIDR."
-  type        = string
-}
-
 variable "postgres_version" {
   type    = string
   default = "16.11"

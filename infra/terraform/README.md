@@ -51,13 +51,55 @@ thing that points at it did.
 Both cycles were introduced while writing this and caught by the wiring check
 described below, not by reasoning about the graph in advance.
 
-## What is not here yet
+## The connection pooler
 
-**PgBouncer.** §14.4 is explicit that connection management matters more than
-task count: 20 API tasks against RDS will exhaust Postgres connections without
-transaction pooling in front. Prisma's pool is sized in the app, but the pooler
-itself is a service that needs adding before the API tier scales past a handful
-of tasks.
+§14.4: 20 API tasks at 10 Prisma connections each is 200 connections arriving at
+RDS, before the worker or a migration task. PgBouncer in transaction mode
+multiplexes them onto `pgbouncer_pool_size` server connections — 25 in
+production.
+
+It runs as a **shared service**, not a sidecar. A sidecar pools one task's own
+connections, which is not the problem: every task would still open its own
+connections to Postgres. Only a shared pooler changes the total.
+
+**Application tasks cannot reach Postgres at all.** The only ingress rule on the
+database's security group names the pooler. That is what makes the connection
+accounting true rather than intended — a task that *could* open its own
+connection would eventually be given a reason to.
+
+### Why transaction pooling is safe here, and what would break it
+
+Transaction pooling returns a connection to the pool at every COMMIT and gives
+it to whoever asks next — a different shop, a different customer. That is only
+safe because every RLS setting this codebase writes is transaction-local:
+`set_config(..., true)`. At COMMIT the context is gone.
+
+Change that `true` to `false` and the connection carries one tenant's
+`app.store_id` into the next tenant's queries. RLS then enforces the wrong
+tenant's identity, correctly and invisibly — nothing errors, no policy is
+violated, and the wrong rows come back looking exactly like the right ones.
+
+`tenant-isolation.test.ts` now fails if that changes. It was verified by making
+the change: the test reports store A's id still set on the connection after the
+transaction ended.
+
+### Two connection strings
+
+Services get the pooled URL, which must carry `?pgbouncer=true` — that is how
+Prisma is told not to use prepared statements, which transaction pooling cannot
+carry across connections.
+
+Migrations get `database-url-direct`, straight to RDS. `prisma migrate deploy`
+takes an advisory lock to serialise concurrent deploys and issues DDL assuming a
+stable session; both are session-scoped, so through a pooler the lock would be
+taken and lost on a different connection than the one still migrating.
+
+```
+bba-production/database-url         →  pgbouncer.bba.internal:6432/bba?pgbouncer=true
+bba-production/database-url-direct  →  <rds endpoint>:5432/bba
+```
+
+## What is not here yet
 
 **The worker's real autoscaling trigger.** §14.4 scales it on queue depth and
 oldest-job age. Both are already published by the platform

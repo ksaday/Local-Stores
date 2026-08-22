@@ -15,6 +15,7 @@
 // passed vacuously when those rows were missing. The first test below exists
 // to make that failure mode impossible.
 import { PrismaClient } from "@prisma/client";
+import { PrismaService } from "./prisma.service.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withTenantContext } from "./tenant-context.js";
 
@@ -470,5 +471,77 @@ describe("cross-tenant isolation (RLS)", () => {
 
     expect(fromStoreA).toHaveLength(0);
     expect(fromStoreB).toHaveLength(1);
+  });
+});
+
+/**
+ * The invariant that makes connection pooling safe (plan §14.4).
+ *
+ * PgBouncer in transaction mode hands a connection back to the pool at COMMIT
+ * and gives it to whoever asks next — a different shop, a different customer.
+ * That is only safe because every RLS setting this codebase writes is
+ * transaction-local: `set_config(..., true)`. At COMMIT the context is gone,
+ * so the next transaction starts with nothing.
+ *
+ * Change that `true` to `false` — an easy thing to do while debugging, since
+ * session scope makes the value survive where you can inspect it — and the
+ * connection carries one tenant's `app.store_id` into the next tenant's
+ * queries. RLS would then be enforcing the wrong tenant's identity, correctly
+ * and invisibly.
+ *
+ * These tests exist because that failure has no other symptom. Nothing errors,
+ * no policy is violated, and the wrong rows come back looking exactly like the
+ * right ones.
+ */
+describe("RLS context does not outlive its transaction", () => {
+  it("discards transaction-local context at commit, so a reused connection is clean", async () => {
+    await admin.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.store_id', ${STORE_A}, true)`;
+      const [inside] = await tx.$queryRaw<{ value: string }[]>`
+        SELECT current_setting('app.store_id', true) AS value`;
+      expect(inside!.value).toBe(STORE_A);
+    });
+
+    // The same client, therefore the same pooled connection, after the
+    // transaction has ended. This is what PgBouncer would hand to another
+    // tenant.
+    const [after] = await admin.$queryRaw<{ value: string | null }[]>`
+      SELECT current_setting('app.store_id', true) AS value`;
+
+    expect(after!.value ?? "").toBe("");
+  });
+
+  it("would leak across transactions if the context were session-scoped", async () => {
+    // Not a test of our code — a demonstration of what the `true` argument is
+    // preventing. If this assertion ever fails, Postgres has changed the
+    // meaning of is_local and the whole tenancy model needs rereading.
+    await admin.$executeRaw`SELECT set_config('app.leak_probe', 'tenant-b', false)`;
+
+    const [after] = await admin.$queryRaw<{ value: string | null }[]>`
+      SELECT current_setting('app.leak_probe', true) AS value`;
+
+    expect(after!.value).toBe("tenant-b");
+
+    await admin.$executeRaw`SELECT set_config('app.leak_probe', '', false)`;
+  });
+
+  it("leaves nothing behind after a real tenant-scoped transaction", async () => {
+    // The production path, not a hand-written set_config: withTenantContext is
+    // what every one of the 240 call sites goes through.
+    const scoped = new PrismaService({ datasources: { db: { url: APP_DATABASE_URL } } } as never);
+    try {
+      await scoped.withTenant({ storeId: STORE_A, isSuperAdmin: false }, async (tx) => {
+        await tx.$queryRaw`SELECT 1`;
+      });
+
+      const [after] = await scoped.$queryRaw<{ store: string | null; user: string | null }[]>`
+        SELECT current_setting('app.store_id', true) AS store,
+               current_setting('app.user_id', true) AS user`;
+
+      expect(after!.store ?? "").toBe("");
+      expect(after!.user ?? "").toBe("");
+    } finally {
+      await scoped.$disconnect();
+    }
   });
 });

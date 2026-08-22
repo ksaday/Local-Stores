@@ -2,10 +2,14 @@
  * Postgres and Redis (plan §14.1, §14.4, §14.6).
  *
  * Both live in the data subnets, which have no route to the internet, and both
- * accept traffic only from the app tier's security group — not from a CIDR.
- * The distinction matters: a CIDR rule keeps working when something unexpected
- * is placed in that range, whereas a security-group rule grants access to a
+ * accept traffic only from a named security group — never from a CIDR. The
+ * distinction matters: a CIDR rule keeps working when something unexpected is
+ * placed in that range, whereas a security-group rule grants access to a
  * specific set of tasks and nothing else.
+ *
+ * Postgres is reached only by the connection pooler, not by application tasks
+ * at all. See modules/compute/pgbouncer.tf for why that indirection exists and
+ * for the rules that grant it.
  */
 
 # ── Security groups ──────────────────────────────────────────────────────────
@@ -18,17 +22,15 @@ resource "aws_security_group" "postgres" {
   tags = merge(var.tags, { Name = "${var.name}-postgres" })
 }
 
-resource "aws_vpc_security_group_ingress_rule" "postgres_from_app" {
-  security_group_id            = aws_security_group.postgres.id
-  referenced_security_group_id = var.app_security_group_id
-  from_port                    = 5432
-  to_port                      = 5432
-  ip_protocol                  = "tcp"
-  description                  = "Postgres from ECS tasks"
-}
-
 # Deliberately no egress rule. Postgres has no reason to originate a
 # connection, and the absence is the control.
+#
+# The *ingress* rules are not here either, and that is structural. Granting
+# access means naming the security group being granted it, which belongs to the
+# compute module — and a module that depends on compute while compute depends on
+# it for the database endpoint is a cycle Terraform refuses. Standalone rule
+# resources exist for exactly this: compute creates them against the groups this
+# module exports.
 
 resource "aws_security_group" "redis" {
   name        = "${var.name}-redis"
@@ -36,15 +38,6 @@ resource "aws_security_group" "redis" {
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, { Name = "${var.name}-redis" })
-}
-
-resource "aws_vpc_security_group_ingress_rule" "redis_from_app" {
-  security_group_id            = aws_security_group.redis.id
-  referenced_security_group_id = var.app_security_group_id
-  from_port                    = 6379
-  to_port                      = 6379
-  ip_protocol                  = "tcp"
-  description                  = "Redis from ECS tasks"
 }
 
 # ── Postgres ─────────────────────────────────────────────────────────────────

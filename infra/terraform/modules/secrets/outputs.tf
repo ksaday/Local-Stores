@@ -19,6 +19,11 @@ output "database_url_arn" {
   value = aws_secretsmanager_secret.database_url.arn
 }
 
+output "database_url_direct_arn" {
+  description = "For the migration task. Never for a service."
+  value       = aws_secretsmanager_secret.database_url_direct.arn
+}
+
 output "redis_url_arn" {
   value = aws_secretsmanager_secret.redis_url.arn
 }
@@ -27,8 +32,20 @@ output "all_secret_arns" {
   description = "Everything the execution role may read, connection strings included."
   value = concat(
     [for s in aws_secretsmanager_secret.app : s.arn],
-    [aws_secretsmanager_secret.database_url.arn, aws_secretsmanager_secret.redis_url.arn],
+    [
+      aws_secretsmanager_secret.database_url.arn,
+      aws_secretsmanager_secret.database_url_direct.arn,
+      aws_secretsmanager_secret.redis_url.arn,
+    ],
   )
+}
+
+output "postgres_app_password_arn" {
+  value = aws_secretsmanager_secret.app["postgres-app-password"].arn
+}
+
+output "pgbouncer_repository_url" {
+  value = aws_ecr_repository.this["pgbouncer"].repository_url
 }
 
 output "api_repository_url" {

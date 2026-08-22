@@ -33,6 +33,12 @@ variable "image_tag" {
   type        = string
 }
 
+variable "pgbouncer_image_tag" {
+  description = "Built from infra/docker/pgbouncer. Changes far less often than the app images."
+  type        = string
+  default     = "latest"
+}
+
 variable "otlp_endpoint" {
   description = "OTLP collector. Empty disables tracing entirely."
   type        = string
