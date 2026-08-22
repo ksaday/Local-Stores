@@ -5,11 +5,12 @@
  * apps/api/Dockerfile for why building them separately is a way to deploy a
  * worker whose code disagrees with the API enqueuing its work.
  *
- * The load balancer routes only to `web`. Nothing outside the VPC can reach
- * the API directly: the browser talks to the Next.js BFF, which calls the API
- * over the private network with the session cookie attached. That is the whole
- * point of the BFF pattern, and putting the API behind its own public listener
- * would quietly undo it.
+ * The load balancer routes to `web`, and to the API for exactly one path
+ * prefix: `/api/v1/webhooks/*`. Everything a browser does goes through the BFF,
+ * which calls the API over private DNS — putting the API behind its own public
+ * listener would quietly undo the whole point of that pattern. Stripe is the
+ * exception and cannot be proxied, because a webhook signature is computed over
+ * the exact bytes of the body. See webhooks.tf.
  */
 
 locals {
@@ -39,13 +40,28 @@ resource "aws_security_group" "alb" {
   tags        = merge(var.tags, { Name = "${var.name}-alb" })
 }
 
+/**
+ * Only CloudFront may reach the load balancer.
+ *
+ * AWS publishes the origin-facing CloudFront ranges as a managed prefix list,
+ * so this narrows the ALB from the whole internet to one service. It is not
+ * sufficient on its own — anyone can point *their* CloudFront distribution at
+ * this ALB's hostname, and their requests would come from the same ranges —
+ * which is why the listener additionally requires a shared secret header that
+ * only our distribution sends. Network origin plus proof of identity; either
+ * alone leaves a way in.
+ */
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
-  description       = "HTTPS from the internet"
+  description       = "HTTPS from CloudFront only"
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {
@@ -69,6 +85,18 @@ resource "aws_vpc_security_group_ingress_rule" "tasks_from_alb" {
   to_port                      = var.web_port
   ip_protocol                  = "tcp"
   description                  = "Web from the load balancer"
+}
+
+# The webhook path terminates at the API, so the load balancer needs to reach
+# it too. Added with the listener rule rather than left to be discovered as
+# failing health checks on the API target group.
+resource "aws_vpc_security_group_ingress_rule" "tasks_api_from_alb" {
+  security_group_id            = aws_security_group.tasks.id
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = var.api_port
+  to_port                      = var.api_port
+  ip_protocol                  = "tcp"
+  description                  = "API webhooks from the load balancer"
 }
 
 /**
@@ -155,10 +183,44 @@ resource "aws_lb_listener" "https" {
   ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn = var.certificate_arn
 
+  /**
+   * Refuse by default, and forward only on proof.
+   *
+   * The rules below each require the shared secret header, so a request that
+   * reaches this listener some other way — a stray CloudFront distribution, a
+   * host header pointed at the ALB's own DNS name — gets a flat 403 rather
+   * than the storefront. The default action being a refusal rather than a
+   * forward is what makes that true by construction: a new rule has to opt
+   * into serving traffic.
+   */
   default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      status_code  = "403"
+      message_body = "Direct access is not permitted."
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "web" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 200
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn
   }
+
+  condition {
+    http_header {
+      http_header_name = var.origin_secret_header_name
+      values           = [var.origin_secret]
+    }
+  }
+
+  tags = var.tags
 }
 
 # ── Logs ─────────────────────────────────────────────────────────────────────

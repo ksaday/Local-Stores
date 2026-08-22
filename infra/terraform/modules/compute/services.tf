@@ -113,6 +113,16 @@ resource "aws_ecs_service" "api" {
     registry_arn = aws_service_discovery_service.api.arn
   }
 
+  # Only so Stripe webhooks can reach it. Every other route into the API is
+  # private — see webhooks.tf.
+  load_balancer {
+    target_group_arn = aws_lb_target_group.api.arn
+    container_name   = "api"
+    container_port   = var.api_port
+  }
+
+  health_check_grace_period_seconds = 45
+
   # Circuit breaker with rollback: a task definition that cannot start is
   # reverted automatically instead of leaving the service stuck part-deployed
   # while the old tasks drain.

@@ -126,6 +126,22 @@ variable "media_bucket_arn" {
   default     = null
 }
 
+variable "origin_secret" {
+  description = <<-EOT
+    Shared secret CloudFront sends and the load balancer requires. Narrowing
+    the security group to CloudFront's ranges is not enough on its own:
+    anybody's distribution can be pointed at this ALB and would arrive from the
+    same addresses.
+  EOT
+  type        = string
+  sensitive   = true
+}
+
+variable "origin_secret_header_name" {
+  type    = string
+  default = "x-bba-origin"
+}
+
 variable "enable_execute_command" {
   description = "ECS Exec — a shell into a running task. Useful in staging, an audited backdoor in production."
   type        = bool

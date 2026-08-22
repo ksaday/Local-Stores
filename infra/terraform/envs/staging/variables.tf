@@ -3,9 +3,29 @@ variable "region" {
   default = "us-east-2"
 }
 
-variable "certificate_arn" {
-  description = "ACM certificate for the ALB listener, in this region. Created outside this configuration because DNS validation is interactive."
+variable "hosted_zone_name" {
+  description = "Route 53 zone, which must already exist — delegation happens at the registrar."
   type        = string
+}
+
+variable "domain_name" {
+  type = string
+}
+
+variable "cdn_domain_name" {
+  description = "Media origin. Separate from the app so an uploaded file cannot reach app cookies."
+  type        = string
+}
+
+variable "media_bucket_name" {
+  description = "Globally unique."
+  type        = string
+}
+
+variable "stripe_ip_ranges" {
+  description = "Stripe's published webhook ranges. Empty means no IP restriction — signature verification is the real control."
+  type        = list(string)
+  default     = []
 }
 
 variable "image_tag" {

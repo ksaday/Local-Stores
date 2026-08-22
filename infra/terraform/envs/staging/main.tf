@@ -25,6 +25,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.70"
     }
+
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   /**
@@ -118,7 +123,7 @@ module "compute" {
   public_subnet_ids = module.network.public_subnet_ids
   app_subnet_ids    = module.network.app_subnet_ids
 
-  certificate_arn = var.certificate_arn
+  certificate_arn = module.dns.alb_certificate_arn
 
   api_image = module.secrets.api_repository_url
   web_image = module.secrets.web_repository_url
@@ -148,9 +153,95 @@ module "compute" {
   stripe_webhook_secret_arn  = module.secrets.stripe_webhook_secret_arn
   secret_arns                = module.secrets.all_secret_arns
 
+  origin_secret = random_password.origin_secret.result
+
+  media_bucket_arn = module.storage.media_bucket_arn
+
   enable_execute_command = true
 
   deletion_protection = false
+
+  tags = local.tags
+}
+
+/**
+ * A second provider, pinned to us-east-1.
+ *
+ * CloudFront's certificate and its WAF web ACL must live there whatever region
+ * the rest of this runs in. Passed explicitly to the modules that need it, so
+ * the constraint is visible here rather than surfacing as an apply-time error.
+ */
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = local.tags
+  }
+}
+
+/**
+ * The secret CloudFront sends and the load balancer requires.
+ *
+ * Generated rather than configured, because nobody needs to know it and a
+ * value a human chose is a value that ends up in a chat message. It lands in
+ * Terraform state, which is why the load balancer treats it as proof of origin
+ * and never as authentication — the controls that matter are the session
+ * cookie and, for webhooks, Stripe's signature.
+ */
+resource "random_password" "origin_secret" {
+  length  = 48
+  special = false
+}
+
+module "storage" {
+  source = "../../modules/storage"
+
+  bucket_name = var.media_bucket_name
+  domain_name = var.domain_name
+
+  tags = local.tags
+}
+
+module "dns" {
+  source = "../../modules/dns"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name             = local.name
+  hosted_zone_name = var.hosted_zone_name
+  domain_name      = var.domain_name
+  cdn_domain_name  = var.cdn_domain_name
+
+  tags = local.tags
+}
+
+module "edge" {
+  source = "../../modules/edge"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name            = local.name
+  hosted_zone_id  = module.dns.zone_id
+  certificate_arn = module.dns.cloudfront_certificate_arn
+  domain_name     = var.domain_name
+  cdn_domain_name = var.cdn_domain_name
+
+  media_bucket_name                 = module.storage.media_bucket_name
+  media_bucket_arn                  = module.storage.media_bucket_arn
+  media_bucket_regional_domain_name = module.storage.media_bucket_regional_domain_name
+
+  alb_dns_name = module.compute.alb_dns_name
+
+  origin_secret = random_password.origin_secret.result
+
+  stripe_ip_ranges = var.stripe_ip_ranges
 
   tags = local.tags
 }

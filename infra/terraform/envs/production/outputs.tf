@@ -1,5 +1,19 @@
+output "app_url" {
+  value = module.edge.app_url
+}
+
+output "cdn_url" {
+  value = module.edge.cdn_url
+}
+
+output "cloudfront_distribution_id" {
+  description = "For cache invalidation on deploy."
+  value       = module.edge.distribution_id
+}
+
 output "alb_dns_name" {
-  value = module.compute.alb_dns_name
+  description = "CloudFront's origin. Not a name to hand out — the ALB 403s anything without the secret header."
+  value       = module.compute.alb_dns_name
 }
 
 output "postgres_endpoint" {
