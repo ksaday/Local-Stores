@@ -255,6 +255,7 @@ export class OAuthService {
           // The provider asserted it, and we checked.
           emailVerifiedAt: new Date(),
         },
+        select: { id: true },
       });
       await tx.authIdentity.create({
         data: {
@@ -286,17 +287,20 @@ export class OAuthService {
    * recovering it needs support intervention.
    */
   async unlinkIdentity(userId: string, identityId: string): Promise<void> {
-    const [user, identities] = await Promise.all([
+    // The hash through a SECURITY DEFINER function: `bba_app` has no SELECT on
+    // that column (migration 26), and all this needs to know is whether one
+    // exists at all.
+    const [rows, identities] = await Promise.all([
       this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-        tx.user.findUnique({ where: { id: userId }, select: { passwordHash: true } }),
+        tx.$queryRaw<{ auth_self_password_hash: string | null }[]>`
+          SELECT auth_self_password_hash()`,
       ),
       this.listIdentities(userId),
     ]);
 
-    if (!user) throw AppError.notFound();
-
+    const passwordHash = rows[0]?.auth_self_password_hash ?? null;
     const isLast = identities.length <= 1;
-    if (isLast && !user.passwordHash) {
+    if (isLast && !passwordHash) {
       throw AppError.validation(
         "Set a password before removing your last sign-in method, or you won't be able to get back in.",
       );

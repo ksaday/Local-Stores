@@ -206,23 +206,85 @@ describe("cross-tenant isolation (RLS)", () => {
     expect(rows[0]!.name).toBe("Shopper B");
   });
 
+  it("cannot read a customer's credentials, even on a row it may see", async () => {
+    // Migration 25 let a shop see its customers' rows, which it should. RLS is
+    // row-level, so that made every column on them readable by anything that
+    // selected one — including the password hash. Migration 26 takes those two
+    // columns away from the application role entirely.
+    //
+    // Raw SQL on purpose: the point is that the *database* refuses, not that
+    // the service layer remembers to ask nicely.
+    await expect(
+      withTenantContext(
+        prisma,
+        { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+        (tx) => tx.$queryRawUnsafe(`SELECT password_hash FROM users WHERE id = $1`, CUSTOMER_B),
+      ),
+    ).rejects.toThrow(/permission denied/i);
+
+    await expect(
+      withTenantContext(
+        prisma,
+        { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
+        (tx) => tx.$queryRawUnsafe(`SELECT mfa_totp_secret FROM users WHERE id = $1`, CUSTOMER_B),
+      ),
+    ).rejects.toThrow(/permission denied/i);
+  });
+
+  it("cannot read its own credentials by column either", async () => {
+    // Not even about yourself: the only route to a hash is the SECURITY
+    // DEFINER accessor, so there is no context in which the column is readable.
+    await expect(
+      withTenantContext(prisma, scopedToA, (tx) =>
+        tx.$queryRawUnsafe(`SELECT password_hash FROM users WHERE id = $1`, OWNER_A),
+      ),
+    ).rejects.toThrow(/permission denied/i);
+  });
+
+  it("still lets a user reach their own hash through the accessor", async () => {
+    // The revoke would be useless if it also broke signing in and changing a
+    // password, so the replacement path is asserted beside it.
+    await admin.$executeRaw`UPDATE users SET password_hash = 'not-a-real-hash' WHERE id = ${OWNER_A}`;
+
+    const rows = await withTenantContext(prisma, scopedToA, (tx) =>
+      tx.$queryRaw<{ auth_self_password_hash: string | null }[]>`SELECT auth_self_password_hash()`,
+    );
+    expect(rows[0]!.auth_self_password_hash).toBe("not-a-real-hash");
+  });
+
+  it("will not hand one user's hash to another through the accessor", async () => {
+    // It reads `app.user_id` rather than taking an argument, so there is no
+    // parameter to point at somebody else.
+    await admin.$executeRaw`UPDATE users SET password_hash = 'owner-b-hash' WHERE id = ${OWNER_B}`;
+
+    const rows = await withTenantContext(
+      prisma,
+      { userId: OWNER_A, storeId: STORE_B, isSuperAdmin: false },
+      (tx) =>
+        tx.$queryRaw<{ auth_self_password_hash: string | null }[]>`SELECT auth_self_password_hash()`,
+    );
+    expect(rows[0]!.auth_self_password_hash).not.toBe("owner-b-hash");
+  });
+
   it("hides another store's customer", async () => {
     // The whole risk of widening `users_read`: it must admit a shop to its own
     // customers and not to everybody's.
+    // Naming the columns, because `bba_app` may no longer read the whole row
+    // (migration 26) — the same discipline the services keep.
     const rows = await withTenantContext(prisma, scopedToA, (tx) =>
-      tx.user.findMany({ where: { id: CUSTOMER_B } }),
+      tx.user.findMany({ where: { id: CUSTOMER_B }, select: { id: true } }),
     );
     expect(rows).toHaveLength(0);
   });
 
   it("hides somebody who has never ordered from anyone", async () => {
     const fromA = await withTenantContext(prisma, scopedToA, (tx) =>
-      tx.user.findMany({ where: { id: STRANGER } }),
+      tx.user.findMany({ where: { id: STRANGER }, select: { id: true } }),
     );
     const fromB = await withTenantContext(
       prisma,
       { userId: OWNER_B, storeId: STORE_B, isSuperAdmin: false },
-      (tx) => tx.user.findMany({ where: { id: STRANGER } }),
+      (tx) => tx.user.findMany({ where: { id: STRANGER }, select: { id: true } }),
     );
     expect(fromA).toHaveLength(0);
     expect(fromB).toHaveLength(0);

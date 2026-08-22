@@ -76,7 +76,7 @@ export class AccountService {
 
     const userId = resolved.userId;
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.update({ where: { id: userId }, data: { emailVerifiedAt: new Date() } }),
+      tx.user.update({ where: { id: userId }, data: { emailVerifiedAt: new Date() }, select: { id: true } }),
     );
   }
 
@@ -131,7 +131,7 @@ export class AccountService {
     const passwordHash = await this.passwords.hash(newPassword);
 
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.update({ where: { id: userId }, data: { passwordHash } }),
+      tx.user.update({ where: { id: userId }, data: { passwordHash }, select: { id: true } }),
     );
 
     const revoked = await this.auth.revokeAllSessions(userId);
@@ -153,12 +153,23 @@ export class AccountService {
     currentPassword: string,
     newPassword: string,
   ): Promise<void> {
-    const user = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.findUnique({ where: { id: userId } }),
-    );
-    if (!user?.passwordHash) throw AppError.unauthenticated();
+    // The hash comes through a SECURITY DEFINER function — `bba_app` has no
+    // SELECT on that column (migration 26) — and the email through an ordinary
+    // read, which is all the rest of this needs.
+    const [user, rows] = await Promise.all([
+      this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+        tx.user.findUnique({ where: { id: userId }, select: { email: true } }),
+      ),
+      this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+        tx.$queryRaw<{ auth_self_password_hash: string | null }[]>`
+          SELECT auth_self_password_hash()`,
+      ),
+    ]);
 
-    const ok = await this.passwords.verify(user.passwordHash, currentPassword);
+    const currentHash = rows[0]?.auth_self_password_hash ?? null;
+    if (!user || !currentHash) throw AppError.unauthenticated();
+
+    const ok = await this.passwords.verify(currentHash, currentPassword);
     if (!ok) {
       throw AppError.validation("Your current password is incorrect.", [
         { field: "currentPassword", code: "INCORRECT", message: "That password is incorrect." },
@@ -169,7 +180,7 @@ export class AccountService {
     const passwordHash = await this.passwords.hash(newPassword);
 
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.update({ where: { id: userId }, data: { passwordHash } }),
+      tx.user.update({ where: { id: userId }, data: { passwordHash }, select: { id: true } }),
     );
 
     await this.auth.revokeAllSessions(userId);

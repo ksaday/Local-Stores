@@ -181,6 +181,7 @@ export class InvitationService {
             // so a separate verification round-trip would be ceremony.
             emailVerifiedAt: new Date(),
           },
+          select: { id: true },
         });
       }
 

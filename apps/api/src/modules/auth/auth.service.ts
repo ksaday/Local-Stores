@@ -79,6 +79,9 @@ export class AuthService {
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
       tx.user.create({
         data: { id: userId, email, name: input.name.trim(), passwordHash, status: "ACTIVE" },
+        // Only the id comes back. `bba_app` cannot read `password_hash`
+        // (migration 26), and Prisma returns every column unless told not to.
+        select: { id: true },
       }),
     );
 
@@ -118,6 +121,7 @@ export class AuthService {
       tx.user.update({
         where: { id: user.id },
         data: { lastLoginAt: new Date(), ...(rehashed ? { passwordHash: rehashed } : {}) },
+        select: { id: true },
       }),
     );
 
@@ -169,7 +173,7 @@ export class AuthService {
    */
   async completeProviderSignIn(userId: string, device: DeviceInfo): Promise<LoginOutcome> {
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.update({ where: { id: userId }, data: { lastLoginAt: new Date() } }),
+      tx.user.update({ where: { id: userId }, data: { lastLoginAt: new Date() }, select: { id: true } }),
     );
 
     if (await this.mfa.isEnabled(userId)) {
@@ -252,9 +256,16 @@ export class AuthService {
     const { accessToken, refreshToken, expiresAt } = await this.prisma.withTenant(
       { userId, isSuperAdmin: false },
       async (tx) => {
+        // `select` rather than `include`: an include brings every scalar
+        // column with it, and `bba_app` may not read the credential ones
+        // (migration 26). Naming what a session needs is also just true —
+        // it needs an id, an email and a role.
         const user = await tx.user.findUniqueOrThrow({
           where: { id: userId },
-          include: {
+          select: {
+            id: true,
+            email: true,
+            platformRole: true,
             memberships: {
               where: { status: "ACTIVE" },
               select: { storeId: true, role: true },

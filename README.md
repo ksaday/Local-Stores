@@ -29,7 +29,7 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
-accessibility work done; the worker, the outbox and billing are in.** 577 tests
+accessibility work done; the worker, the outbox and billing are in.** 581 tests
 passing. A shop can list products, take an order online or over the counter,
 work the queue, take cash or card, refund, print a receipt, run a promotion,
 send a parcel out with a driver, get a photograph and a signature back, be
@@ -54,6 +54,15 @@ account order as "Guest" because the `users` join silently returned nothing.
 RLS filters rows rather than raising, so it failed quietly for as long as it
 existed. Write access was not widened: a shop still cannot edit somebody's
 account.
+
+RLS is row-level, so letting a shop see a customer's row would have exposed
+every column on it. `password_hash` and `mfa_totp_secret` are therefore
+revoked from the application role outright (migration 26): logging in goes
+through the SECURITY DEFINER lookup it always did, and a user reaching their
+own goes through two more that read `app.user_id` rather than taking an id.
+The database refuses the column to `bba_app` in every context, so this does
+not depend on each query remembering to name its columns — though they all do
+now, because the revoke made the ones that did not fail loudly.
 
 **Auth** — argon2id, EdDSA access tokens with membership claims, refresh
 rotation with family-wide revocation on replay, email verification, password

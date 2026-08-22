@@ -52,10 +52,29 @@ export class MfaService {
       tx.user.update({
         where: { id: userId },
         data: { mfaTotpSecret: this.encrypt(secret.base32), mfaEnabledAt: null },
+        select: { id: true },
       }),
     );
 
     return { otpauthUri: totp.toString(), secretBase32: secret.base32 };
+  }
+
+  /**
+   * The caller's own TOTP secret.
+   *
+   * Through a SECURITY DEFINER function because `bba_app` has no SELECT on
+   * `mfa_totp_secret` — see migration 26. The function reads `app.user_id`
+   * rather than taking one, so it can only ever answer about whoever is
+   * authenticated.
+   */
+  private async selfTotp(
+    userId: string,
+  ): Promise<{ mfa_totp_secret: string | null; mfa_enabled_at: Date | null } | undefined> {
+    const rows = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
+      tx.$queryRaw<{ mfa_totp_secret: string | null; mfa_enabled_at: Date | null }[]>`
+        SELECT * FROM auth_self_totp()`,
+    );
+    return rows[0];
   }
 
   /** Confirms the user can actually generate codes, then activates MFA. */
@@ -64,19 +83,17 @@ export class MfaService {
     email: string,
     code: string,
   ): Promise<{ recoveryCodes: string[] }> {
-    const user = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.findUnique({ where: { id: userId }, select: { mfaTotpSecret: true } }),
-    );
-    if (!user?.mfaTotpSecret) throw AppError.validation("Start MFA setup first.");
+    const secret = await this.selfTotp(userId);
+    if (!secret?.mfa_totp_secret) throw AppError.validation("Start MFA setup first.");
 
-    if (!this.verifyCode(this.decrypt(user.mfaTotpSecret), email, code)) {
+    if (!this.verifyCode(this.decrypt(secret.mfa_totp_secret), email, code)) {
       throw AppError.validation("That code isn't right. Check your authenticator app and try again.");
     }
 
     const recoveryCodes = await this.regenerateRecoveryCodes(userId);
 
     await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.update({ where: { id: userId }, data: { mfaEnabledAt: new Date() } }),
+      tx.user.update({ where: { id: userId }, data: { mfaEnabledAt: new Date() }, select: { id: true } }),
     );
 
     this.logger.log(`MFA enabled for user=${userId}`);
@@ -97,15 +114,10 @@ export class MfaService {
    * happens to look like a TOTP digit string cannot burn a recovery code.
    */
   async verifyChallenge(userId: string, email: string, code: string): Promise<boolean> {
-    const user = await this.prisma.withTenant({ userId, isSuperAdmin: false }, (tx) =>
-      tx.user.findUnique({
-        where: { id: userId },
-        select: { mfaTotpSecret: true, mfaEnabledAt: true },
-      }),
-    );
-    if (!user?.mfaEnabledAt || !user.mfaTotpSecret) return false;
+    const secret = await this.selfTotp(userId);
+    if (!secret?.mfa_enabled_at || !secret.mfa_totp_secret) return false;
 
-    if (this.verifyCode(this.decrypt(user.mfaTotpSecret), email, code)) return true;
+    if (this.verifyCode(this.decrypt(secret.mfa_totp_secret), email, code)) return true;
 
     return this.consumeRecoveryCode(userId, code);
   }
@@ -116,6 +128,7 @@ export class MfaService {
       await tx.user.update({
         where: { id: userId },
         data: { mfaTotpSecret: null, mfaEnabledAt: null },
+        select: { id: true },
       });
     });
     this.logger.warn(`MFA disabled for user=${userId}`);
