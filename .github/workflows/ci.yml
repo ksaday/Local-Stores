@@ -160,3 +160,32 @@ jobs:
       - name: Server logs
         if: failure()
         run: tail -80 /tmp/api.log /tmp/web.log
+
+  terraform:
+    # Its own job because it needs Terraform rather than Node, and because a
+    # syntax error in infrastructure should not wait behind a ten-minute test
+    # suite to be reported.
+    #
+    # `validate` is the point. It checks provider schemas — that every resource
+    # argument exists and every reference resolves — which is exactly what
+    # cannot be checked without the provider downloaded. `-backend=false` keeps
+    # init from reaching for real S3 state.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Formatting
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Validate every environment
+        run: |
+          for env in infra/terraform/envs/*/; do
+            echo "── $env"
+            terraform -chdir="$env" init -backend=false -input=false
+            terraform -chdir="$env" validate
+          done
