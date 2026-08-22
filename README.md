@@ -678,6 +678,20 @@ Run just the tenant-isolation gate (this must always pass — it's the release g
 cd apps/api && npm run test:isolation
 ```
 
+The bundle budget reads the web build and fails if the shared baseline or any
+route crosses its ceiling:
+
+```bash
+npm run bundle
+```
+
+The app is ~100KB shared and no route more than about 10KB over that, almost
+all of it React and Next. That erodes one import at a time — a date library
+here, a charting library there, each defensible alone — so it is measured
+rather than trusted. Adding Recharts to a single route was enough to take it
+from 106KB to 187KB, which is both the check working and the number behind
+[ADR 0002](docs/adr/0002-charts-in-svg.md).
+
 The accessibility gate (NFR-A11Y-04) runs axe over eighteen pages — public,
 auth, and every ops screen — against a **running** stack, so start the API and
 web app first, and run the dev seed so there is a real storefront to look at

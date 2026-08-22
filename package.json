@@ -17,7 +17,8 @@
     "test": "turbo run test",
     "db:up": "brew services start postgresql@16 && brew services start redis",
     "db:down": "brew services stop postgresql@16 && brew services stop redis",
-    "a11y": "node scripts/a11y.mjs"
+    "a11y": "node scripts/a11y.mjs",
+    "bundle": "node scripts/bundle-budget.mjs"
   },
   "devDependencies": {
     "axe-core": "^4.13.0",

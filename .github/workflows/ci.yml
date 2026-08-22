@@ -110,6 +110,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Bundle budget
+        # After the build, before the stack goes up: this reads the build
+        # output rather than a running server, and a bundle regression is
+        # cheaper to learn about than an accessibility one.
+        run: npm run bundle
+
       - name: Seed a store to audit
         # The gate discovers its own URLs from whatever the seed made, so this
         # is what gives it a storefront, a product and an ops dashboard to look
