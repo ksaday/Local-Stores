@@ -17,14 +17,24 @@ import { scrape } from "./metrics.js";
  * It answers `/metrics` and nothing else — a 404 for everything, so it cannot
  * be mistaken for a general-purpose listener.
  */
-export function startMetricsServer(port: number, logger: JsonLogger): Server {
+export function startMetricsServer(
+  port: number,
+  logger: JsonLogger,
+  /**
+   * Run before the registry is rendered, for metrics that are read rather than
+   * counted — see `PipelineMetrics` for why those are collected here and not
+   * written by the job they describe. It must not reject: a throw would fail
+   * the whole scrape, including the metrics that had nothing to do with it.
+   */
+  beforeScrape?: () => Promise<void>,
+): Server {
   const server = createServer((req, res) => {
     if (req.url !== "/metrics") {
       res.writeHead(404).end();
       return;
     }
 
-    scrape()
+    (beforeScrape ? beforeScrape().then(scrape) : scrape())
       .then(({ body, contentType }) => {
         res.writeHead(200, { "content-type": contentType }).end(body);
       })

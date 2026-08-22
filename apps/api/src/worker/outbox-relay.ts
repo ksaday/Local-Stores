@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import type { Env } from "../config/env.js";
+import { OUTBOX_MAX_ATTEMPTS } from "../infra/outbox/outbox.service.js";
 import { PrismaService } from "../infra/prisma/prisma.service.js";
 import { ORDER_EVENTS_CHANNEL } from "../modules/orders/order-events.bridge.js";
 
@@ -17,14 +18,8 @@ interface OutboxRow {
 /** How many events one pass will publish. Bounded so a backlog drains steadily. */
 const BATCH_SIZE = 100;
 
-/**
- * Past this, an event is parked rather than retried forever.
- *
- * Without a ceiling one permanently poisonous row blocks every event behind it,
- * which for an order queue means the screens quietly stop updating and nobody
- * knows why.
- */
-const MAX_ATTEMPTS = 10;
+/** See `OUTBOX_MAX_ATTEMPTS` for why the ceiling exists and why it lives there. */
+const MAX_ATTEMPTS = OUTBOX_MAX_ATTEMPTS;
 
 /**
  * Publishes outbox events to Redis, in order, exactly once per successful pass.

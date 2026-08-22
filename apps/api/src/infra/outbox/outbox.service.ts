@@ -2,6 +2,19 @@ import { Injectable } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service.js";
 
+/**
+ * Past this many failed publishes, an event is parked rather than retried
+ * forever. Without a ceiling one permanently poisonous row blocks every event
+ * behind it, which for an order queue means the screens quietly stop updating
+ * and nobody knows why.
+ *
+ * Lives here, with the outbox itself, because two things now depend on it: the
+ * relay that stops retrying, and the `outbox_dead_lettered` gauge that counts
+ * what the relay gave up on. Two copies of this number would eventually differ,
+ * and the gauge would then be counting a threshold nothing enforces.
+ */
+export const OUTBOX_MAX_ATTEMPTS = 10;
+
 export interface OutboxRecord {
   type: string;
   storeId?: string | null;

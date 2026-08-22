@@ -1,6 +1,6 @@
 import "reflect-metadata";
-import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { JsonLogger, loggerOptionsFrom } from "../infra/observability/logger.js";
 import { MailProcessor } from "./mail-processor.js";
 import { MediaProcessor } from "./media-processor.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -15,7 +15,17 @@ import { WorkerModule } from "./worker.module.js";
  * domain service without opening a port.
  */
 async function bootstrap(): Promise<void> {
-  const logger = new Logger("worker");
+  // The same structured logger as the API. A JSON stream from one process and
+  // prose from the other is not one log: the aggregator can index requestId on
+  // half of it, and the half it cannot index is the half where the pipeline
+  // faults show up.
+  const logger = new JsonLogger(
+    loggerOptionsFrom({
+      NODE_ENV: process.env.NODE_ENV,
+      LOG_FORMAT: process.env.LOG_FORMAT as "json" | "pretty" | undefined,
+      LOG_LEVEL: process.env.LOG_LEVEL as never,
+    }),
+  );
   const app = await NestFactory.createApplicationContext(WorkerModule, { bufferLogs: true });
   app.useLogger(logger);
 

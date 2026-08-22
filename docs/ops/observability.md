@@ -61,12 +61,13 @@ the largest single gap in the plan's operability.
 
 | Metric | Type | Labels | Why |
 |---|---|---|---|
-| `outbox_pending` | gauge | — | Unpublished rows. Rising means the relay is behind or stopped; every customer notification rides on it. |
-| `outbox_dead_lettered` | gauge | — | Rows at `attempts >= MAX_ATTEMPTS`. Non-empty pages a human. Already computed by `OutboxRelay.deadLettered()` and only logged. |
+| `outbox_pending` | gauge | — | Unpublished rows. Rising means the relay is behind or stopped; every customer notification rides on it. **Built.** |
+| `outbox_dead_lettered` | gauge | — | Rows at `attempts >= OUTBOX_MAX_ATTEMPTS`. Non-empty pages a human. **Built.** |
 | `outbox_publish_lag` | histogram | — | `now() - created_at` at publish. The honest measure of how stale a staff screen is. |
-| `queue_depth` | gauge | queue | BullMQ `mail` and `media`. A mail queue that stops draining silently withholds password resets. |
+| `queue_depth` | gauge | queue, **state** | BullMQ `mail` and `media`. A mail queue that stops draining silently withholds password resets. **Built** — with a `state` label the table did not ask for, because one number cannot tell "backed up" from "stuck" from "failing". |
 | `worker_job_duration` / `worker_job_failures` | histogram / counter | job | One series per scheduled job (`outbox-relay`, `order-expiry`, `billing-grace-period`, `billing-dunning`, `inventory-low-stock`, `sales-rollup`, `dead-letter-check`). |
-| `rollup_staleness` | gauge | — | `now() - max(computed_at)` from `daily_store_sales`. Every reporting screen reads a rollup; if the sweep stops, the figures do not go missing, they go quietly stale, and the dashboard keeps showing a plausible number. |
+| `rollup_staleness` | gauge | — | `now() - max(computed_at)` from `daily_store_sales`. Every reporting screen reads a rollup; if the sweep stops, the figures do not go missing, they go quietly stale, and the dashboard keeps showing a plausible number. **Built** — see migration 27, which exists so this costs 0.04ms instead of 15ms of two parallel workers. |
+| `job_last_run_age_seconds` | gauge | job | Not in the original list. Added because `rollup_staleness` alone has a false alarm: a quiet platform ages it with nothing broken. Stale data *plus a recent pass* is a quiet weekend; stale data *plus no pass* is a stopped worker. Only jobs that take a lease appear. **Built.** |
 
 ### Platform
 
@@ -154,9 +155,12 @@ In order, because each makes the next one meaningful:
    Served from a **separate port** (`METRICS_PORT`, default 9464) that the load
    balancer does not route: `/metrics` describes the inside of the system, and
    "nobody links to it" is not a control.
-3. **`outbox_dead_lettered`, `queue_depth`, `rollup_staleness`.** The pipeline
-   gauges behind the alerts that page. The first is already computed and thrown
-   away.
+3. ~~**`outbox_dead_lettered`, `queue_depth`, `rollup_staleness`.**~~ **Done**,
+   plus `outbox_pending` and `job_last_run_age_seconds`. All are **read at scrape
+   time**, not written by the worker: a gauge the worker sets goes stale at
+   exactly the value that means "healthy" the moment the worker dies, which is
+   the failure they exist to catch. A collector that cannot answer removes its
+   series, so the gap reads as `absent()` rather than as zero.
 4. **`checkout_attempts` / `checkout_completions`.** The alert §14.5 cares most
    about.
 5. **Traces.** Genuinely useful, and the only one of these that can wait.

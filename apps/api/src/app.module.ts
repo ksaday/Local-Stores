@@ -25,6 +25,7 @@ import { HealthModule } from "./modules/health/health.module.js";
 import { StorefrontModule } from "./modules/storefront/storefront.module.js";
 import { StoresModule } from "./modules/stores/stores.module.js";
 import { JsonLogger, loggerOptionsFrom } from "./infra/observability/logger.js";
+import { PipelineMetrics } from "./infra/observability/pipeline-metrics.js";
 import { RequestLoggingMiddleware } from "./infra/observability/request-logging.middleware.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard.js";
@@ -83,6 +84,9 @@ import { PermissionsGuard } from "./common/guards/permissions.guard.js";
         ),
       inject: [ConfigService],
     },
+    // Reads the outbox, queue and rollup state at scrape time. See the class
+    // for why these are read on demand rather than written by the worker.
+    PipelineMetrics,
   ],
   exports: [JsonLogger],
 })

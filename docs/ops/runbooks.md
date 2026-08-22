@@ -131,14 +131,25 @@ healthy — that suggests a poison event, and the next runbook applies.
 
 ## Dead-letter queue non-empty
 
-**Fires when** any outbox row reaches maximum attempts. `dead-letter-check`
-runs every five minutes and currently only logs a warning.
+**Fires when** `outbox_dead_lettered > 0`, or `queue_depth{state="failed"} > 0`
+for the `mail` or `media` queue. Both are read from Postgres and Redis on every
+scrape rather than written by the worker — see `PipelineMetrics` for why that
+distinction decides whether this alert can fire at all. `dead-letter-check` also
+logs a warning every five minutes.
+
+**If the gauge is *missing* rather than zero**, the collector could not reach
+its dependency: check `pipeline_metrics_collect_failures_total` by collector.
+Absence is deliberate and means "unknown" — it is never to be read as zero.
 
 > **Plan and code disagree on the ceiling.** NFR-AVL-05 says a job retries at
-> most five times; `MAX_ATTEMPTS` in `outbox-relay.ts` is 10. The queries below
-> use 10, because that is what the system does. Somebody should reconcile the
-> two — either is defensible, but a runbook keyed to the wrong number reports
-> healthy rows as dead-lettered.
+> most five times; `OUTBOX_MAX_ATTEMPTS` in `infra/outbox/outbox.service.ts` is
+> 10. The queries below use 10, because that is what the system does. Somebody
+> should reconcile the two — either is defensible, but a runbook keyed to the
+> wrong number reports healthy rows as dead-lettered.
+>
+> The constant is now single-sourced and the `outbox_dead_lettered` gauge reads
+> it, so the metric and the relay cannot drift apart. Changing it is a one-line
+> change in one place.
 
 **Confirm** — read the failures rather than the count.
 
@@ -164,6 +175,50 @@ handler bug, every type failing is infrastructure.
 
 **Escalate** if events are payment-related. Those touch money, and the fix is
 somebody's decision rather than yours.
+
+---
+
+## Reports going stale
+
+**Fires when** `rollup_staleness_seconds` exceeds an hour. The sweep runs every
+fifteen minutes, so an hour is four missed passes.
+
+This one is quiet by nature and that is what makes it dangerous: when the rollup
+sweep stops, no screen breaks and no request fails. Every reporting page keeps
+rendering yesterday's figures as though they were today's, and a shop owner
+reads a number that is simply wrong. Nobody reports it, because there is nothing
+to see.
+
+**Confirm** — the first question is whether the job is running at all, not
+whether the data is old.
+
+```sql
+SELECT job_name, last_started_at, now() - last_started_at AS age, owner
+FROM scheduled_job_runs ORDER BY age DESC;
+```
+
+Read it together with the metric:
+
+| `rollup_staleness` | `sales-rollup` pass | Meaning |
+|---|---|---|
+| high | recent | Nobody traded. Not a fault — the sweep only writes rows for stores with activity. |
+| high | old or missing | The worker is not running the job. This is the real alarm. |
+| high | recent, one store wrong | A single store is failing inside the sweep. Look for `Rollup failed for store …` in the worker log; other stores are unaffected by design. |
+
+**Act.**
+
+1. No pass at all — check the worker is alive and that nothing holds the lease.
+   A worker that died mid-pass leaves no lock to release; the row simply ages
+   out and another worker claims the next pass, so this should self-heal within
+   one interval. If it does not, the worker is not running.
+2. Passes happening but data still old — one store is throwing. The sweep
+   deliberately continues past a failing store, so the platform's other figures
+   are fine and this is not an emergency.
+3. Recompute a window by hand once the cause is fixed; the sweep is idempotent,
+   so re-running it is always safe.
+
+**Do not** fix this by pointing reports back at the transactional tables. They
+cannot serve this query under RLS — see ADR 0003.
 
 ---
 

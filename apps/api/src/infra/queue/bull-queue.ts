@@ -55,6 +55,20 @@ export abstract class BullQueue<T> implements OnModuleDestroy {
     return this.queue.getFailedCount();
   }
 
+  /**
+   * Depth by state, for the `queue_depth` gauge.
+   *
+   * One round trip for all four: BullMQ issues these as a pipeline, and a
+   * gauge read on every scrape should not be four sequential calls to Redis.
+   *
+   * `completed` is deliberately not asked for. It is bounded by the retention
+   * policy rather than by anything happening now, so it measures the retention
+   * setting rather than the queue.
+   */
+  async jobCounts(): Promise<Record<string, number>> {
+    return this.queue.getJobCounts("waiting", "active", "delayed", "failed");
+  }
+
   /** Removes the queue entirely, including its job history. Test teardown. */
   async obliterate(): Promise<void> {
     await this.queue.obliterate({ force: true }).catch(() => undefined);

@@ -1,0 +1,26 @@
+-- An index for one question: "when did the rollup sweep last write anything?"
+--
+-- `rollup_staleness` (docs/ops/observability.md §2) is `now() - max(computed_at)`,
+-- and it is read on every metrics scrape — every fifteen seconds, forever. The
+-- primary key is (store_id, date), which is no help at all for a max() over a
+-- different column, so without this the answer is a full scan.
+--
+-- Measured against 241,000 rollup rows:
+--
+--   no index                  15.5ms, 3,953 buffers  — parallel seq scan, 2 workers
+--   (computed_at DESC)         0.04ms,     4 buffers  — index-only scan, one row
+--
+-- The scan cost grows with stores x trading days and never shrinks, so the gap
+-- widens for as long as the platform runs. Paying 15ms of two workers' time
+-- every fifteen seconds to ask whether a background job is alive would make the
+-- monitoring a meaningful share of the load it is monitoring.
+--
+-- DESC because the reader always wants the newest. Postgres can read a btree
+-- backwards, so ASC would also work; matching the query's direction just keeps
+-- the plan obvious to whoever reads it next.
+--
+-- CONCURRENTLY so building it does not lock out the rollup sweep's writes. It
+-- cannot run inside a transaction, which is why this migration contains nothing
+-- else.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "daily_store_sales_computed_at"
+  ON "daily_store_sales" ("computed_at" DESC);
