@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { registry as metricsRegistry } from "../../infra/observability/metrics.js";
 import { testNotifications } from "../notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { FakePaymentProvider } from "../../infra/payments/payment.provider.fake.js";
@@ -518,5 +519,92 @@ describe("failures are visible", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.processed_at).not.toBeNull();
+  });
+});
+
+/**
+ * The signal for money taken with no order to show for it.
+ *
+ * The runbook calls this the worst state in the system, and until recently it
+ * produced two log warnings and nothing else. Each case below is a distinct way
+ * Stripe can confirm a charge that nothing local accounts for.
+ */
+describe("unreconciled payments", () => {
+  async function unreconciled(cause: string): Promise<number> {
+    const metric = await metricsRegistry.getSingleMetric("payments_unreconciled_total")?.get();
+    return metric?.values.find((v) => v.labels.cause === cause)?.value ?? 0;
+  }
+
+  it("flags a charge whose store cannot be resolved", async () => {
+    // Stripe took the money and we cannot even say which shop it was for.
+    const { body } = event("payment_intent.succeeded", {
+      id: "pi_no_store_at_all",
+      metadata: {},
+    });
+
+    const before = await unreconciled("no_store");
+    await webhooks.handle(body, "valid");
+
+    expect((await unreconciled("no_store")) - before).toBe(1);
+  });
+
+  it("flags a charge with no matching payment row", async () => {
+    // The store resolves, but nothing local was ever written for this intent,
+    // so no amount of retrying will reconcile it.
+    const { body } = event("payment_intent.succeeded", {
+      id: "pi_never_recorded_here",
+      metadata: { storeId: STORE },
+    });
+
+    const before = await unreconciled("no_payment_row");
+    await webhooks.handle(body, "valid");
+
+    expect((await unreconciled("no_payment_row")) - before).toBe(1);
+  });
+
+  it("does not flag an ordinary successful payment", async () => {
+    // The case that must stay silent, or the alert is worthless.
+    const order = await placeOrder();
+    const intent = await payments.createCardPayment(STORE, order.id, crypto.randomUUID(), { userId: BUYER });
+    const { body } = event("payment_intent.succeeded", {
+      id: intent.intentId,
+      metadata: { storeId: STORE, orderId: order.id },
+    });
+
+    const before =
+      (await unreconciled("no_store")) +
+      (await unreconciled("no_payment_row")) +
+      (await unreconciled("confirm_failed"));
+    await webhooks.handle(body, "valid");
+    const after =
+      (await unreconciled("no_store")) +
+      (await unreconciled("no_payment_row")) +
+      (await unreconciled("confirm_failed"));
+
+    expect(after - before).toBe(0);
+  });
+
+  it("does not flag a duplicate success for an order already confirmed", async () => {
+    // The transition refuses the second event, which is correct and benign.
+    // Telling this apart from a real failure is why the check re-reads the
+    // order's status rather than inspecting the error.
+    const order = await placeOrder();
+    const intent = await payments.createCardPayment(STORE, order.id, crypto.randomUUID(), { userId: BUYER });
+    const first = event("payment_intent.succeeded", {
+      id: intent.intentId,
+      metadata: { storeId: STORE, orderId: order.id },
+    });
+    await webhooks.handle(first.body, "valid");
+
+    // A distinct event id, so idempotency does not short-circuit the replay.
+    const second = event("payment_intent.succeeded", {
+      id: intent.intentId,
+      metadata: { storeId: STORE, orderId: order.id },
+    });
+
+    const before = await unreconciled("confirm_failed");
+    await webhooks.handle(second.body, "valid");
+
+    expect((await unreconciled("confirm_failed")) - before).toBe(0);
   });
 });

@@ -14,6 +14,8 @@ const envSchema = z.object({
    * inside the network and from nowhere else.
    */
   METRICS_PORT: z.coerce.number().int().positive().default(9464),
+  /** The worker's own scrape port. Separate so both can run on one dev machine. */
+  WORKER_METRICS_PORT: z.coerce.number().int().positive().default(9465),
 
   /**
    * Log format. Defaults to prose locally and JSON in production, which is

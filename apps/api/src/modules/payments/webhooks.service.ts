@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { declineReason, paymentOutcomes } from "../../infra/observability/payment-metrics.js";
+import { declineReason, paymentOutcomes, paymentsUnreconciled, UNRECONCILED } from "../../infra/observability/payment-metrics.js";
 import { randomUUID } from "node:crypto";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
@@ -171,7 +171,11 @@ export class StripeWebhooksService {
     paymentOutcomes.inc({ provider: "STRIPE", outcome: "succeeded", reason: "none" });
 
     if (!storeId) {
-      this.logger.warn(`payment_intent.succeeded ${intentId} has no resolvable store`);
+      // Stripe charged somebody and we cannot even say which shop it was for.
+      paymentsUnreconciled.inc({ cause: UNRECONCILED.NO_STORE });
+      this.logger.error(
+        `Charged with no resolvable store: intent ${intentId}. A customer has paid and no order exists.`,
+      );
       return;
     }
 
@@ -192,7 +196,12 @@ export class StripeWebhooksService {
     });
 
     if (!orderId) {
-      this.logger.warn(`No payment row for intent ${intentId}`);
+      // The charge went through at Stripe against an intent we have no record
+      // of. Nothing local will ever reconcile this on its own.
+      paymentsUnreconciled.inc({ cause: UNRECONCILED.NO_PAYMENT_ROW });
+      this.logger.error(
+        `Charged with no payment row: intent ${intentId}. A customer has paid and no order exists.`,
+      );
       return;
     }
 
@@ -203,6 +212,41 @@ export class StripeWebhooksService {
       // the transition refuses and there is nothing more to do. Anything else
       // is worth surfacing.
       this.logger.warn(`Could not confirm order ${orderId} after payment: ${String(err)}`);
+
+      // Which of those two it was is decided by where the order actually
+      // ended up, not by the error: a refusal because it is already CONFIRMED
+      // is the benign case, and anything still PENDING is a customer who has
+      // paid for an order the shop has not been told about.
+      await this.flagIfStillUnconfirmed(storeId, orderId);
+    }
+  }
+
+  /**
+   * Records money taken against an order that never reached CONFIRMED.
+   *
+   * Read after the failed transition rather than inferred from the exception,
+   * because the common failure here is the harmless one — a duplicate webhook
+   * for an order that is already confirmed — and telling the two apart by
+   * error message would break the first time the wording changed.
+   */
+  private async flagIfStillUnconfirmed(storeId: string, orderId: string): Promise<void> {
+    try {
+      const [order] = await this.prisma.withTenant({ storeId, isSuperAdmin: false }, (tx) =>
+        tx.$queryRaw<{ status: string }[]>`
+          SELECT status::text AS status FROM orders WHERE id = ${orderId} AND store_id = ${storeId}
+        `,
+      );
+      if (order?.status !== "PENDING") return;
+
+      paymentsUnreconciled.inc({ cause: UNRECONCILED.CONFIRM_FAILED });
+      this.logger.error(
+        `Order ${orderId} is PENDING after a successful payment. The customer has been charged.`,
+      );
+    } catch (err) {
+      // Never let the check itself break webhook handling: the payment is
+      // already recorded, and a failed lookup must not turn a reconciliation
+      // problem into a webhook Stripe will retry forever.
+      this.logger.warn(`Could not check order ${orderId} after a failed confirm: ${String(err)}`);
     }
   }
 

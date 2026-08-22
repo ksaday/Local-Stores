@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { registry as metricsRegistry } from "../../infra/observability/metrics.js";
 import { testNotifications } from "../../modules/notifications/test-notifications.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import { AuditService } from "../audit/audit.service.js";
@@ -350,6 +351,13 @@ describe("cash payment", () => {
   });
 });
 
+/** The unreconciled counter's reading for one cause. */
+async function unreconciled(cause: string): Promise<number> {
+  const metric = await metricsRegistry.getSingleMetric("payments_unreconciled_total")?.get();
+  const match = metric?.values.find((v) => v.labels.cause === cause);
+  return match?.value ?? 0;
+}
+
 describe("expiry sweeper", () => {
   it("cancels stale pending orders and frees their stock", async () => {
     // Without this an abandoned checkout holds the last loaf off the shelf
@@ -380,6 +388,40 @@ describe("expiry sweeper", () => {
 
     const detail = await orders.getForStore(STORE, order.id);
     expect(detail.status).toBe("PENDING");
+  });
+
+  it("flags an expired order that had already been paid", async () => {
+    // The worst state in the system, and the sweeper is a path that creates
+    // it: an order paid but never confirmed is cancelled here with the note
+    // "Expired without payment", which takes the customer's money with it.
+    // The cancellation is deliberately not prevented — holding stock forever
+    // is a product decision — so the signal is what makes it findable.
+    const order = await placeOrder();
+    await asAdmin(async (db) => {
+      await db.$executeRaw`UPDATE payments SET status = 'SUCCEEDED' WHERE order_id = ${order.id}`;
+      await db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`;
+    });
+
+    const before = await unreconciled("expired_while_paid");
+    await orders.expireStaleOrders();
+    const after = await unreconciled("expired_while_paid");
+
+    expect(after - before).toBe(1);
+  });
+
+  it("does not flag an expired order that was never paid", async () => {
+    // The ordinary case, and by far the common one: an abandoned basket. If
+    // this counted, the signal would fire constantly and mean nothing.
+    const order = await placeOrder();
+    await asAdmin((db) =>
+      db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`,
+    );
+
+    const before = await unreconciled("expired_while_paid");
+    await orders.expireStaleOrders();
+    const after = await unreconciled("expired_while_paid");
+
+    expect(after - before).toBe(0);
   });
 
   it("attributes the cancellation to the system, not a person", async () => {

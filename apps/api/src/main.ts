@@ -11,6 +11,7 @@ import { AppModule } from "./app.module.js";
 import { JsonLogger } from "./infra/observability/logger.js";
 import { startMetricsServer } from "./infra/observability/metrics-server.js";
 import { initCheckoutMetrics } from "./infra/observability/checkout-metrics.js";
+import { initPaymentMetrics } from "./infra/observability/payment-metrics.js";
 import { PipelineMetrics } from "./infra/observability/pipeline-metrics.js";
 import { ProblemDetailsFilter } from "./common/filters/problem-details.filter.js";
 import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor.js";
@@ -116,6 +117,9 @@ async function bootstrap(): Promise<void> {
   // first scrape. See initCheckoutMetrics: an absent completions series makes
   // the alert silent in exactly the total-outage case.
   initCheckoutMetrics();
+  // Zero rather than absent, so a flat zero line is distinguishable from a
+  // metric nobody wired up. See initPaymentMetrics.
+  initPaymentMetrics();
 
   const pipeline = app.get(PipelineMetrics);
   startMetricsServer(config.get("METRICS_PORT", { infer: true }), app.get(JsonLogger), () =>

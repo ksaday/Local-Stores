@@ -170,6 +170,71 @@ with the authority to refund.
 
 ---
 
+## Money taken with no order — `payments_unreconciled_total`
+
+**Fires on any increase at all:**
+
+```promql
+increase(payments_unreconciled_total[10m]) > 0
+```
+
+There is no threshold and no burn rate. One occurrence is one real customer who
+has been charged for something they did not get, and it will not resolve itself.
+Page immediately, at any hour.
+
+Note this counter lives in **both** processes — the API sees the webhook causes,
+the worker sees the sweeper. Always `sum()` across instances, or half of it is
+invisible.
+
+**The `cause` label says which failure it was**, and they need different actions:
+
+| cause | What happened | First move |
+|---|---|---|
+| `no_store` | Stripe confirmed a charge and the event carried no store we could resolve. | Find the intent in the Stripe dashboard; its metadata has the store and order. |
+| `no_payment_row` | The store resolved, but no local payment matches the intent. We have no record of asking for this money. | Same — read the intent's metadata. Suspect a payment created against a since-deleted order, or a webhook from another environment. |
+| `confirm_failed` | Payment recorded, but the order would not move to CONFIRMED. | The order is still PENDING and the shop has not been told. Look for the transition error in the log by `orderId`. |
+| `expired_while_paid` | The expiry sweeper cancelled an order that had already been paid, releasing its stock. | The worst of the four: the order is CANCELLED, the stock is back on the shelf, and the customer is out of pocket. |
+
+**Confirm** — every case names its order or intent in an ERROR log line. Then:
+
+```sql
+SELECT o.id, o.order_number, o.status AS order_status, o.placed_at,
+       p.provider, p.status AS payment_status, p.amount_cents, p.stripe_payment_intent_id
+FROM payments p JOIN orders o ON o.id = p.order_id
+WHERE p.status = 'SUCCEEDED' AND o.status IN ('PENDING', 'CANCELLED')
+ORDER BY o.placed_at DESC LIMIT 50;
+```
+
+That is the standing view the counter cannot give — it records that money went
+unaccounted for, not whether it still is. Run it to see what is currently
+outstanding.
+
+**Act.**
+
+1. Confirm at Stripe that the charge is real and settled before doing anything.
+   Trust the provider over our own rows here; ours are what failed.
+2. If the goods can still be supplied, confirm the order by hand and tell the
+   shop. The customer gets what they paid for and nothing else is needed.
+3. If they cannot — `expired_while_paid` usually means the stock went back and
+   may already be sold — refund in full and tell the customer before they find
+   out. Do not wait for them to complain.
+4. Never resolve this by editing the order's status to make the alert stop. The
+   money moved; the row is the evidence.
+
+**Escalate** every one of these to somebody with refund authority. That is the
+whole point of the signal.
+
+> **A known defect feeds `expired_while_paid`.** `expireStaleOrders` cancels any
+> PENDING order past its expiry without checking whether it was paid, and
+> annotates it "Expired without payment" — which is false. So a payment that
+> succeeds while confirmation fails becomes a cancelled order within thirty
+> minutes. The cancellation is deliberately not blocked in code: refusing to
+> expire a paid order would hold its stock indefinitely, which is a product
+> decision, not a fix to make in passing. Until it is decided, this alert is the
+> safety net.
+
+---
+
 ## Webhook processing lag over 5 minutes
 
 **Fires when** Stripe events are arriving but not being processed promptly.

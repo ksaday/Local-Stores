@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { registry } from "./metrics.js";
 import { declineReason, stripeCallDuration, timeStripeCall } from "./payment-metrics.js";
 
-async function seriesFor(name: string) {
+/** Histogram entries carry a `metricName` (`_bucket`, `_sum`, `_count`); counters do not. */
+interface Sample {
+  labels: Record<string, unknown>;
+  value: number;
+  metricName?: string;
+}
+
+async function seriesFor(name: string): Promise<Sample[]> {
   const metric = await registry.getSingleMetric(name)?.get();
-  return (metric?.values ?? []) as { labels: Record<string, unknown>; value: number }[];
+  return (metric?.values ?? []) as Sample[];
 }
 
 describe("decline reasons as labels", () => {
@@ -71,7 +78,7 @@ describe("timing a Stripe call", () => {
 
     const counts = (await seriesFor("stripe_call_duration_seconds")).filter(
       (s) => s.labels.operation === "getAccountStatus" && s.metricName?.endsWith("_count"),
-    ) as ({ labels: Record<string, unknown>; value: number; metricName?: string })[];
+    );
 
     const byOutcome = Object.fromEntries(counts.map((c) => [c.labels.outcome, c.value]));
     expect(byOutcome.ok).toBe(1);

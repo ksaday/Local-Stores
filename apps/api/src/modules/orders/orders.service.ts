@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { paymentOutcomes } from "../../infra/observability/payment-metrics.js";
+import { paymentOutcomes, paymentsUnreconciled, UNRECONCILED } from "../../infra/observability/payment-metrics.js";
 import { randomUUID } from "node:crypto";
 import {
   InvalidTransitionError,
@@ -475,9 +475,20 @@ export class OrdersService {
     // sweeps nothing. That failure is invisible: the job succeeds, reports 0,
     // and stock stays held forever.
     const stale = await this.prisma.withTenant({ isSuperAdmin: true }, (tx) =>
-      tx.$queryRaw<{ id: string; store_id: string }[]>`
-        SELECT id, store_id FROM orders
-        WHERE status = 'PENDING' AND expires_at IS NOT NULL AND expires_at < ${now}
+      tx.$queryRaw<{ id: string; store_id: string; paid: boolean }[]>`
+        SELECT o.id, o.store_id,
+               -- Asked here rather than in a second round trip per order. This
+               -- sweep cancels PENDING orders and releases their stock without
+               -- regard to payment, so an order that was paid but never
+               -- confirmed is cancelled with the note "Expired without
+               -- payment" — which is false, and takes the customer's money
+               -- with it. Detecting it is what this column is for.
+               EXISTS (
+                 SELECT 1 FROM payments p
+                 WHERE p.order_id = o.id AND p.status = 'SUCCEEDED'
+               ) AS paid
+        FROM orders o
+        WHERE o.status = 'PENDING' AND o.expires_at IS NOT NULL AND o.expires_at < ${now}
         LIMIT 200
       `,
     );
@@ -496,6 +507,17 @@ export class OrdersService {
           "Expired without payment",
         );
         expired += 1;
+
+        // Counted after the cancellation succeeded, because that is the moment
+        // the money became unaccounted for. Deliberately not *prevented* here:
+        // refusing to expire a paid order would hold its stock indefinitely,
+        // which is a product decision rather than a fix to make in passing.
+        if (order.paid) {
+          paymentsUnreconciled.inc({ cause: UNRECONCILED.EXPIRED_WHILE_PAID });
+          this.logger.error(
+            `Expired order ${order.id} had a successful payment. The customer has been charged for a cancelled order.`,
+          );
+        }
       } catch (err) {
         // One bad order must not stop the sweep.
         this.logger.warn(`Could not expire order ${order.id}: ${String(err)}`);

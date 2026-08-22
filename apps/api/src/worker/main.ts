@@ -1,6 +1,8 @@
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { JsonLogger, loggerOptionsFrom } from "../infra/observability/logger.js";
+import { startMetricsServer } from "../infra/observability/metrics-server.js";
+import { initPaymentMetrics } from "../infra/observability/payment-metrics.js";
 import { MailProcessor } from "./mail-processor.js";
 import { MediaProcessor } from "./media-processor.js";
 import { OutboxRelay } from "./outbox-relay.js";
@@ -28,6 +30,16 @@ async function bootstrap(): Promise<void> {
   );
   const app = await NestFactory.createApplicationContext(WorkerModule, { bufferLogs: true });
   app.useLogger(logger);
+
+  // The worker needs a scrape endpoint of its own. `expired_while_paid` is
+  // incremented here, by the expiry sweep, and a counter in a process nobody
+  // scrapes is a counter that does not exist — which would have made the most
+  // consequential cause of an unreconciled payment the one nobody could see.
+  //
+  // Its own port so both processes can run on one machine in development. In
+  // production they are separate containers and can share a number.
+  initPaymentMetrics();
+  startMetricsServer(Number(process.env.WORKER_METRICS_PORT ?? 9465), logger);
 
   const scheduler = app.get(WorkerScheduler);
   const relay = app.get(OutboxRelay);

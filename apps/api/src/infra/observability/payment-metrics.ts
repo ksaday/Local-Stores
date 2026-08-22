@@ -96,3 +96,72 @@ export async function timeStripeCall<T>(operation: string, run: () => Promise<T>
     stripeCallDuration.observe({ operation, outcome }, seconds);
   }
 }
+
+/**
+ * Money taken with nothing to show for it.
+ *
+ * The runbook calls this the worst state in the system: a customer has been
+ * charged and no order reached CONFIRMED. Until now it produced two log
+ * warnings and no signal at all.
+ *
+ * ## Why a counter at the source, and not a gauge over the database
+ *
+ * The obvious shape is a scrape-time gauge — "how many succeeded payments sit
+ * against an unconfirmed order right now" — matching `PipelineMetrics`. It was
+ * built that way first and measured: driven from payments it costs 15ms and
+ * 6,800 buffers at 420,000 rows even with a partial index, and driven from
+ * orders the planner abandons the index entirely. Both scale with traffic, on
+ * every scrape, forever.
+ *
+ * The counter is better on every axis that matters here. The condition arises
+ * at exactly the sites below and nowhere else, so counting there is *exact*
+ * rather than inferred from a join. It costs nothing. And it does not forget:
+ * a gauge over a bounded time window drops the problem once it ages out, which
+ * for money owed to a customer is precisely backwards, while
+ * `increase(...[24h])` still finds an occurrence from this morning.
+ *
+ * The one thing a counter cannot say is whether the money is *still*
+ * unreconciled — it records that it happened, not that it is outstanding. That
+ * is the right division: "it happened" is the alert, and resolution is a human
+ * with the authority to refund. The standing view belongs in a reconciliation
+ * report an admin opens, not in a fifteen-second scrape.
+ */
+export const paymentsUnreconciled = new Counter({
+  name: "payments_unreconciled_total",
+  help: "Payments that succeeded at the provider without an order reaching CONFIRMED. Any increase needs a human.",
+  labelNames: ["cause"],
+  registers: [registry],
+});
+
+/**
+ * Every way money can be taken without an order to show for it.
+ *
+ * Named rather than free strings so the set stays closed and the runbook can
+ * enumerate them. Each maps to one site, and each means something different to
+ * whoever is woken up.
+ */
+export const UNRECONCILED = {
+  /** The webhook arrived but no store could be resolved from it. */
+  NO_STORE: "no_store",
+  /** No local payment row matches the intent Stripe says it charged. */
+  NO_PAYMENT_ROW: "no_payment_row",
+  /** The payment was recorded, but the order would not move to CONFIRMED. */
+  CONFIRM_FAILED: "confirm_failed",
+  /** The expiry sweeper cancelled an order that had already been paid. */
+  EXPIRED_WHILE_PAID: "expired_while_paid",
+} as const;
+
+/**
+ * Creates every series at zero so "none of this has happened" is visible.
+ *
+ * Unlike most counters, an absent series here is genuinely ambiguous: it reads
+ * the same as a metric that was never wired up. For a signal nobody expects to
+ * see move, an explicit zero is what distinguishes working-and-quiet from
+ * silently-broken, and it lets a dashboard show a flat zero line rather than an
+ * empty panel that nobody trusts.
+ */
+export function initPaymentMetrics(): void {
+  for (const cause of Object.values(UNRECONCILED)) {
+    paymentsUnreconciled.inc({ cause }, 0);
+  }
+}
