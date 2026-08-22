@@ -1,5 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { paymentOutcomes, paymentsUnreconciled, UNRECONCILED } from "../../infra/observability/payment-metrics.js";
+import {
+  ordersRecovered,
+  paymentOutcomes,
+  paymentsUnreconciled,
+  RECOVERED,
+  UNRECONCILED,
+} from "../../infra/observability/payment-metrics.js";
 import { randomUUID } from "node:crypto";
 import {
   InvalidTransitionError,
@@ -463,10 +469,16 @@ export class OrdersService {
   }
 
   /**
-   * Releases stock held by PENDING orders that were never completed.
+   * Settles PENDING orders that ran out of time, each in the way it deserves.
    *
-   * Without this, an abandoned checkout holds the last item off the shelf
-   * forever. Runs from a scheduled job; safe to call repeatedly.
+   * Two quite different cases arrive here together, and telling them apart is
+   * the whole job. An order nobody paid for is an abandoned basket: cancel it
+   * and put the stock back, or the last item on the shelf is held forever. An
+   * order that *was* paid is the opposite — it is a completed sale whose
+   * confirmation went missing, and cancelling it would take a customer's money
+   * and release the goods they bought.
+   *
+   * Runs from a scheduled job; safe to call repeatedly.
    */
   async expireStaleOrders(now = new Date()): Promise<number> {
     // Deliberately super-admin scope, not `unscoped()`. The sweep is
@@ -496,6 +508,38 @@ export class OrdersService {
     let expired = 0;
     for (const order of stale) {
       try {
+        // A paid order is never expired. It is finished.
+        //
+        // "PENDING with a successful payment" does not mean the shopper walked
+        // away — it means they paid and the confirmation did not happen:
+        // the webhook's transition threw, or cash was collected without one.
+        // Cancelling it takes their money and puts the goods back on the shelf,
+        // and the history line would read "Expired without payment", which is
+        // the opposite of what occurred.
+        //
+        // So the sweep finishes the job instead. This is the same transition
+        // the payment handler would have made, through the same path, so the
+        // stock reservation becomes a sale exactly as it would have. It is
+        // idempotent and safe to reach twice.
+        if (order.paid) {
+          await this.transition(
+            order.store_id,
+            order.id,
+            "CONFIRMED",
+            { userId: null, role: "SYSTEM" },
+            "Payment received; confirmed by the expiry sweep after the original confirmation failed",
+          );
+
+          ordersRecovered.inc({ cause: RECOVERED.PAID_BUT_UNCONFIRMED });
+          // Warn, not error: the customer has their order and nobody needs
+          // waking. It still says the confirmation path failed upstream, which
+          // is worth someone's attention on a weekday.
+          this.logger.warn(
+            `Order ${order.id} was paid but still pending; confirmed it. The payment confirmation path failed earlier.`,
+          );
+          continue;
+        }
+
         // SYSTEM is a legitimate actor for PENDING->CANCELLED; the same
         // transition path applies, so the reservation release is not a
         // second implementation that could drift.
@@ -507,20 +551,21 @@ export class OrdersService {
           "Expired without payment",
         );
         expired += 1;
-
-        // Counted after the cancellation succeeded, because that is the moment
-        // the money became unaccounted for. Deliberately not *prevented* here:
-        // refusing to expire a paid order would hold its stock indefinitely,
-        // which is a product decision rather than a fix to make in passing.
-        if (order.paid) {
-          paymentsUnreconciled.inc({ cause: UNRECONCILED.EXPIRED_WHILE_PAID });
-          this.logger.error(
-            `Expired order ${order.id} had a successful payment. The customer has been charged for a cancelled order.`,
-          );
-        }
       } catch (err) {
         // One bad order must not stop the sweep.
         this.logger.warn(`Could not expire order ${order.id}: ${String(err)}`);
+
+        // A paid order that could not be confirmed is left exactly as it is:
+        // still PENDING, stock still reserved, money still accounted for. That
+        // is the safe resting place, but nothing will move it on by itself, so
+        // it needs a person. The next sweep will try again, which means this
+        // keeps counting until somebody resolves it — which is accurate.
+        if (order.paid) {
+          paymentsUnreconciled.inc({ cause: UNRECONCILED.RECOVERY_FAILED });
+          this.logger.error(
+            `Order ${order.id} is paid but cannot be confirmed. A customer has been charged for an order nobody is preparing.`,
+          );
+        }
       }
     }
     return expired;

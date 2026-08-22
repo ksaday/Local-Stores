@@ -175,12 +175,25 @@ with the authority to refund.
 **Fires on any increase at all:**
 
 ```promql
-increase(payments_unreconciled_total[10m]) > 0
+increase(payments_unreconciled_total{cause!="confirm_failed"}[10m]) > 0
 ```
 
 There is no threshold and no burn rate. One occurrence is one real customer who
 has been charged for something they did not get, and it will not resolve itself.
 Page immediately, at any hour.
+
+> **`confirm_failed` is excluded, and that is deliberate.** It is the one cause
+> the system repairs on its own: the order is left PENDING with its stock still
+> reserved, and the expiry sweep confirms it when it comes round — within the
+> order's thirty-minute TTL. Paging for a condition that heals itself in half an
+> hour is how an on-call learns to ignore this alert, which would be far more
+> expensive than the thing it is warning about. If the repair *also* fails it
+> becomes `recovery_failed`, which is not excluded and does page. Watch
+> `confirm_failed` on a dashboard, at warning level:
+>
+> ```promql
+> increase(payments_unreconciled_total{cause="confirm_failed"}[1h]) > 0
+> ```
 
 Note this counter lives in **both** processes — the API sees the webhook causes,
 the worker sees the sweeper. Always `sum()` across instances, or half of it is
@@ -192,8 +205,8 @@ invisible.
 |---|---|---|
 | `no_store` | Stripe confirmed a charge and the event carried no store we could resolve. | Find the intent in the Stripe dashboard; its metadata has the store and order. |
 | `no_payment_row` | The store resolved, but no local payment matches the intent. We have no record of asking for this money. | Same — read the intent's metadata. Suspect a payment created against a since-deleted order, or a webhook from another environment. |
-| `confirm_failed` | Payment recorded, but the order would not move to CONFIRMED. | The order is still PENDING and the shop has not been told. Look for the transition error in the log by `orderId`. |
-| `expired_while_paid` | The expiry sweeper cancelled an order that had already been paid, releasing its stock. | The worst of the four: the order is CANCELLED, the stock is back on the shelf, and the customer is out of pocket. |
+| `confirm_failed` | Payment recorded, but the order would not move to CONFIRMED. | **Does not page** — the expiry sweep confirms it within the order's thirty-minute TTL. The shop is not told until then, so it is worth reading the transition error in the log by `orderId`, but not at 3am. |
+| `recovery_failed` | A paid order was still PENDING when the expiry sweep found it, and could not be confirmed. | The sweep leaves it exactly as it is — still PENDING, stock still reserved — so nothing is lost, but nothing will move it on either. Confirm it by hand. |
 
 **Confirm** — every case names its order or intent in an ERROR log line. Then:
 
@@ -224,14 +237,24 @@ outstanding.
 **Escalate** every one of these to somebody with refund authority. That is the
 whole point of the signal.
 
-> **A known defect feeds `expired_while_paid`.** `expireStaleOrders` cancels any
-> PENDING order past its expiry without checking whether it was paid, and
-> annotates it "Expired without payment" — which is false. So a payment that
-> succeeds while confirmation fails becomes a cancelled order within thirty
-> minutes. The cancellation is deliberately not blocked in code: refusing to
-> expire a paid order would hold its stock indefinitely, which is a product
-> decision, not a fix to make in passing. Until it is decided, this alert is the
-> safety net.
+### The related signal that is *not* a page — `orders_recovered_total`
+
+The expiry sweep does not cancel a paid order. "PENDING with a successful
+payment" does not mean the shopper walked away, it means they paid and the
+confirmation went missing, so the sweep finishes the job: it confirms the order
+through the same transition the payment handler would have used, and the stock
+reservation becomes a sale rather than going back on the shelf.
+
+```promql
+increase(orders_recovered_total[1h]) > 0
+```
+
+Nobody is paged for this. The customer has their order and the money is
+accounted for. It is a **symptom**, not an incident: every recovery means the
+normal confirmation path failed upstream, so a rising rate is worth a weekday
+look at why `payment_intent.succeeded` is not confirming orders on its own.
+`recovery_failed` above is what this escalates to when the repair itself
+cannot run.
 
 ---
 

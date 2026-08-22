@@ -351,12 +351,14 @@ describe("cash payment", () => {
   });
 });
 
-/** The unreconciled counter's reading for one cause. */
-async function unreconciled(cause: string): Promise<number> {
-  const metric = await metricsRegistry.getSingleMetric("payments_unreconciled_total")?.get();
-  const match = metric?.values.find((v) => v.labels.cause === cause);
-  return match?.value ?? 0;
+/** One counter's reading for one cause. */
+async function counterFor(name: string, cause: string): Promise<number> {
+  const metric = await metricsRegistry.getSingleMetric(name)?.get();
+  return metric?.values.find((v) => v.labels.cause === cause)?.value ?? 0;
 }
+
+const unreconciled = (cause: string) => counterFor("payments_unreconciled_total", cause);
+const recovered = (cause: string) => counterFor("orders_recovered_total", cause);
 
 describe("expiry sweeper", () => {
   it("cancels stale pending orders and frees their stock", async () => {
@@ -390,38 +392,57 @@ describe("expiry sweeper", () => {
     expect(detail.status).toBe("PENDING");
   });
 
-  it("flags an expired order that had already been paid", async () => {
-    // The worst state in the system, and the sweeper is a path that creates
-    // it: an order paid but never confirmed is cancelled here with the note
-    // "Expired without payment", which takes the customer's money with it.
-    // The cancellation is deliberately not prevented — holding stock forever
-    // is a product decision — so the signal is what makes it findable.
-    const order = await placeOrder();
+  it("confirms a paid order instead of cancelling it", async () => {
+    // The bug this replaced: an order paid but never confirmed was cancelled
+    // here with the note "Expired without payment", taking the customer's
+    // money and putting the goods they bought back on the shelf. Being paid
+    // does not mean the shopper walked away — it means confirmation failed.
+    await stock(3);
+    const order = await placeOrder(buyer, 2);
     await asAdmin(async (db) => {
       await db.$executeRaw`UPDATE payments SET status = 'SUCCEEDED' WHERE order_id = ${order.id}`;
       await db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`;
     });
 
-    const before = await unreconciled("expired_while_paid");
+    const before = await recovered("paid_but_unconfirmed");
     await orders.expireStaleOrders();
-    const after = await unreconciled("expired_while_paid");
 
-    expect(after - before).toBe(1);
+    const detail = await orders.getForStore(STORE, order.id);
+    expect(detail.status).toBe("CONFIRMED");
+    expect((await recovered("paid_but_unconfirmed")) - before).toBe(1);
   });
 
-  it("does not flag an expired order that was never paid", async () => {
+  it("turns the paid order's reservation into a sale, not back onto the shelf", async () => {
+    // Cancelling released the stock, which is how a paid-for item ended up
+    // sold to somebody else. Confirming consumes it, exactly as the payment
+    // handler would have.
+    await stock(3);
+    const order = await placeOrder(buyer, 2);
+    await asAdmin(async (db) => {
+      await db.$executeRaw`UPDATE payments SET status = 'SUCCEEDED' WHERE order_id = ${order.id}`;
+      await db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`;
+    });
+
+    await orders.expireStaleOrders();
+
+    expect(await readStock()).toMatchObject({ on_hand: 1, reserved: 0 });
+  });
+
+  it("does not count an unpaid expiry as anything but an expiry", async () => {
     // The ordinary case, and by far the common one: an abandoned basket. If
-    // this counted, the signal would fire constantly and mean nothing.
+    // this counted, both signals would fire constantly and mean nothing.
     const order = await placeOrder();
     await asAdmin((db) =>
       db.$executeRaw`UPDATE orders SET expires_at = now() - interval '1 hour' WHERE id = ${order.id}`,
     );
 
-    const before = await unreconciled("expired_while_paid");
+    const beforeRecovered = await recovered("paid_but_unconfirmed");
+    const beforeStuck = await unreconciled("recovery_failed");
     await orders.expireStaleOrders();
-    const after = await unreconciled("expired_while_paid");
 
-    expect(after - before).toBe(0);
+    expect((await recovered("paid_but_unconfirmed")) - beforeRecovered).toBe(0);
+    expect((await unreconciled("recovery_failed")) - beforeStuck).toBe(0);
+    expect((await orders.getForStore(STORE, order.id)).status).toBe("CANCELLED");
   });
 
   it("attributes the cancellation to the system, not a person", async () => {

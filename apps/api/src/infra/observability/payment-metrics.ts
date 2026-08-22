@@ -147,8 +147,13 @@ export const UNRECONCILED = {
   NO_PAYMENT_ROW: "no_payment_row",
   /** The payment was recorded, but the order would not move to CONFIRMED. */
   CONFIRM_FAILED: "confirm_failed",
-  /** The expiry sweeper cancelled an order that had already been paid. */
-  EXPIRED_WHILE_PAID: "expired_while_paid",
+  /**
+   * A paid order was found unconfirmed by the expiry sweep, and could not be
+   * confirmed. The sweep leaves it alone rather than cancelling it, so the
+   * stock stays reserved and the money stays accounted for — but nothing will
+   * move it on without a person.
+   */
+  RECOVERY_FAILED: "recovery_failed",
 } as const;
 
 /**
@@ -160,8 +165,35 @@ export const UNRECONCILED = {
  * silently-broken, and it lets a dashboard show a flat zero line rather than an
  * empty panel that nobody trusts.
  */
+/**
+ * Orders the system put right on its own.
+ *
+ * Separate from `payments_unreconciled_total` because it means the opposite
+ * thing to whoever is reading: the money is accounted for and the customer has
+ * their order. Nobody should be paged for this.
+ *
+ * It is still worth counting. A recovery means the confirmation path failed
+ * earlier and the safety net caught it, so a rising rate is a real fault in
+ * the payment webhook — just one that is no longer costing anybody money.
+ */
+export const ordersRecovered = new Counter({
+  name: "orders_recovered_total",
+  help: "Orders confirmed by a repair path after the normal confirmation failed. Not an incident; a symptom.",
+  labelNames: ["cause"],
+  registers: [registry],
+});
+
+/** Why an order needed recovering. */
+export const RECOVERED = {
+  /** Paid, but still PENDING when the expiry sweep reached it. */
+  PAID_BUT_UNCONFIRMED: "paid_but_unconfirmed",
+} as const;
+
 export function initPaymentMetrics(): void {
   for (const cause of Object.values(UNRECONCILED)) {
     paymentsUnreconciled.inc({ cause }, 0);
+  }
+  for (const cause of Object.values(RECOVERED)) {
+    ordersRecovered.inc({ cause }, 0);
   }
 }
