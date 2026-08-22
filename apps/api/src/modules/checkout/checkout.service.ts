@@ -1,6 +1,14 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AppError } from "../../common/errors/app-error.js";
+import {
+  checkoutAttempts,
+  checkoutCompletions,
+  checkoutFailures,
+  checkoutReplays,
+  classifyCheckoutFailure,
+  PAYMENT_METHOD,
+} from "../../infra/observability/checkout-metrics.js";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
 import type { Shopper } from "../cart/cart.service.js";
@@ -67,6 +75,17 @@ export interface PlaceOrderRequest extends QuoteRequest {
 
 /** How long a PENDING order holds its stock reservation before the sweeper releases it. */
 const PENDING_TTL_MINUTES = 30;
+
+/**
+ * The payment provider every online order is written with, shared with the
+ * metric that labels by it so the two cannot drift when Stripe lands.
+ *
+ * Cast at every use: `provider` is a Postgres enum, and a bound parameter
+ * arrives as text with no implicit cast to it. The literal this replaced needed
+ * no cast, which is why swapping one for the other broke every order-placing
+ * test until the cast went back in.
+ */
+const PAYMENT_PROVIDER = PAYMENT_METHOD;
 
 @Injectable()
 export class CheckoutService {
@@ -150,27 +169,49 @@ export class CheckoutService {
    */
   async placeOrder(storeId: string, shopper: Shopper, request: PlaceOrderRequest) {
     const store = await this.requireLiveStore(storeId);
+    const labels = { method: PAYMENT_PROVIDER, fulfillment: request.fulfillment };
 
     const existing = await this.findByIdempotencyKey(storeId, shopper, request.idempotencyKey);
-    if (existing) return existing;
-
-    if (request.fulfillment === "DELIVERY" && !request.address) {
-      throw AppError.validation("A delivery address is required.");
+    // A replay is the same checkout, not a new one: its attempt and completion
+    // were both counted the first time round. See `checkoutReplays`.
+    if (existing) {
+      checkoutReplays.inc(labels);
+      return existing;
     }
 
-    const cartId = await this.requireCartId(storeId, shopper);
-    const userId = shopper.kind === "user" ? shopper.userId : undefined;
+    // Counted here, after the replay check, so the denominator is genuine
+    // checkouts. Everything below this line ends in exactly one completion or
+    // one failure, which is what makes attempts = completions + failures hold
+    // and the ratio mean what the alert thinks it means.
+    checkoutAttempts.inc(labels);
 
     try {
-      return await this.createOrder(storeId, shopper, request, cartId, userId, store);
+      if (request.fulfillment === "DELIVERY" && !request.address) {
+        throw AppError.validation("A delivery address is required.");
+      }
+
+      const cartId = await this.requireCartId(storeId, shopper);
+      const userId = shopper.kind === "user" ? shopper.userId : undefined;
+
+      const order = await this.createOrder(storeId, shopper, request, cartId, userId, store);
+      checkoutCompletions.inc(labels);
+      return order;
     } catch (err) {
       // Two retries can both pass the pre-check above and race into the
       // transaction. The unique index decides; the loser returns the winner's
       // order rather than reporting a failure for an order that exists.
       if (isUniqueViolation(err)) {
         const created = await this.findByIdempotencyKey(storeId, shopper, request.idempotencyKey);
-        if (created) return created;
+        if (created) {
+          // A completion, because this request did end with the shopper having
+          // an order. It does mean a genuine double-submit inflates attempts
+          // and completions by one each — which leaves the ratio, the thing
+          // being alerted on, exactly where it was.
+          checkoutCompletions.inc(labels);
+          return created;
+        }
       }
+      checkoutFailures.inc({ ...labels, ...classifyCheckoutFailure(err) });
       throw err;
     }
   }
@@ -353,7 +394,7 @@ export class CheckoutService {
       //    later phase and slots in as a different provider on this same row.
       await tx.$executeRaw`
         INSERT INTO payments (id, store_id, order_id, provider, amount_cents, application_fee_cents, status)
-        VALUES (${randomUUID()}, ${storeId}, ${orderId}, 'CASH', ${totalCents}, 0, 'PROCESSING')
+        VALUES (${randomUUID()}, ${storeId}, ${orderId}, ${PAYMENT_PROVIDER}::"PaymentProvider", ${totalCents}, 0, 'PROCESSING')
       `;
 
       // 7. Retire the cart. Marked converted rather than deleted so the order

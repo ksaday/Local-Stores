@@ -53,7 +53,9 @@ the largest single gap in the plan's operability.
 | Metric | Type | Labels | Why |
 |---|---|---|---|
 | `orders_placed` | counter | store, channel | The number that says whether the platform is doing its job. A drop is the first sign of a checkout fault that is not throwing. |
-| `checkout_attempts` / `checkout_completions` | counter | store, payment method | §14.5 pages when the ratio drops below 98% over 10 minutes. |
+| `checkout_attempts` / `checkout_completions` | counter | ~~store~~, payment method, **fulfillment** | §14.5 pages when the ratio drops below 98% over 10 minutes — but **not** as `completions / attempts`, which also counts rejections and fires on any evening a shop sells out. The correct expression is in the runbook. **Built.** No `store` label — one series per shop, forever, on a platform built to add shops. Per-store detail is a log query on `storeId`, which is cheaper and carries the error message too. |
+| `checkout_failures` | counter | method, fulfillment, kind, reason | Not in the original list, and the alert is wrong without it. `kind=rejected` (sold out, empty cart, shop closed) is the system working correctly; `kind=error` is the system failing. Counting rejections as failed checkouts would page somebody every busy evening that sells something out. **Built.** |
+| `checkout_replays` | counter | method, fulfillment | Requests answered from an existing order under the same idempotency key. Excluded from attempts: a client retrying a lost response is one checkout, and counting it twice would make the alert track shoppers' connection quality. **Built.** |
 | `payment_outcomes` | counter | provider, outcome | Card declines rising is a Stripe or a fraud-rule problem, not an outage, and needs telling apart from a 5xx. |
 | `stripe_call_duration` | histogram | operation | Excluded from the checkout SLO, so it needs its own signal — otherwise a slow Stripe looks like nothing at all. |
 
@@ -161,8 +163,15 @@ In order, because each makes the next one meaningful:
    exactly the value that means "healthy" the moment the worker dies, which is
    the failure they exist to catch. A collector that cannot answer removes its
    series, so the gap reads as `absent()` rather than as zero.
-4. **`checkout_attempts` / `checkout_completions`.** The alert §14.5 cares most
-   about.
+4. ~~**`checkout_attempts` / `checkout_completions`.**~~ **Done**, plus
+   `checkout_failures` and `checkout_replays`. Two things the build changed
+   about the design: rejections are separated from errors, or the alert fires on
+   ordinary trading; and the attempt/completion series are **initialised to
+   zero at boot**, because a labelled counter does not exist until its first
+   increment — so with checkout completely broken there would be attempts and no
+   completions series, and a ratio over a missing numerator is *no data*, which
+   does not alert. The total outage was the one case that would have stayed
+   silent.
 5. **Traces.** Genuinely useful, and the only one of these that can wait.
 
 Runbooks for every alert that pages a human are in [runbooks.md](runbooks.md).

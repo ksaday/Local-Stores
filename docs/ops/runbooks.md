@@ -56,15 +56,53 @@ problem.
 
 ## Checkout success rate below 98%
 
-**Fires when** completions ÷ attempts drops below 98% over ten minutes.
+**Fires when** the checkout success rate drops below 98% over ten minutes:
+
+```promql
+sum(rate(checkout_completions_total[10m]))
+/
+clamp_min(
+  sum(rate(checkout_completions_total[10m]))
+  + sum(rate(checkout_failures_total{kind="error"}[10m])),
+  0.001)
+< 0.98
+```
+
+> **Do not write this as `completions / attempts`.** It is the obvious form and
+> it is wrong. `attempts` also contains rejections — sold-out items, empty
+> carts, a shop that closed — which are the system working correctly. A busy
+> evening that sells 3% of its checkouts out would drop that ratio to 97% and
+> page somebody about inventory they cannot conjure. The denominator above is
+> only the checkouts that *could* have succeeded, which is what "98% success"
+> was always meant to say. §14.5 states the ratio in the loose form; this is the
+> same intent written so it does not fire on trading conditions.
+>
+> `clamp_min` guards the quiet-period divide-by-zero: with no traffic at all
+> both terms are 0, and 0/0 is NaN rather than a firing alert.
 
 This is the alert to take most seriously. It usually means shops are losing
 sales *right now*, and it can fire while every other signal is green — a
 checkout that fails cleanly is a 4xx, not a 5xx, and never touches the
 availability SLO.
 
-**Confirm** — separate "we are broken" from "cards are being declined". The
-`payment_outcomes` metric exists to tell those apart. Then:
+**Confirm** — first, what kind of failure:
+
+```promql
+sum by (kind, reason) (rate(checkout_failures_total[10m]))
+```
+
+`kind="error"` is ours and is what fired this. `kind="rejected"` is not, and is
+excluded from the alert above — but read it anyway: a spike of
+`INVENTORY_INSUFFICIENT` alongside is a shop that has sold out and is still
+taking traffic, which is worth telling them about even though it is not an
+incident.
+
+Also check `checkout_replays_total`. A sharp rise means clients are retrying
+because they never got a response, which points at timeouts or a proxy rather
+than at checkout itself.
+
+Then, to separate "we are broken" from "cards are being declined" — the
+`payment_outcomes` metric exists to tell those apart, and is not built yet:
 
 ```sql
 SELECT status, count(*) FROM orders
@@ -75,6 +113,17 @@ A pile-up in `PENDING` means orders are being created and not paid: the
 problem is between order creation and payment confirmation. Orders spread
 normally across later statuses means checkout is fine and the metric is
 mismeasuring.
+
+**Which shop?** There is deliberately no `store` label on these counters — it
+would be one series per shop forever. Use the logs, which carry `storeId` on
+every line and the error message with it:
+
+```
+context="http" route="/api/v1/stores/:storeId/checkout" status>=400
+```
+
+Group by `storeId`. One shop means their catalogue or their stock; every shop
+means the platform.
 
 **Act.**
 

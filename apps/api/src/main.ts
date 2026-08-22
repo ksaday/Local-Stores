@@ -10,6 +10,7 @@ import helmet from "helmet";
 import { AppModule } from "./app.module.js";
 import { JsonLogger } from "./infra/observability/logger.js";
 import { startMetricsServer } from "./infra/observability/metrics-server.js";
+import { initCheckoutMetrics } from "./infra/observability/checkout-metrics.js";
 import { PipelineMetrics } from "./infra/observability/pipeline-metrics.js";
 import { ProblemDetailsFilter } from "./common/filters/problem-details.filter.js";
 import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor.js";
@@ -111,6 +112,11 @@ async function bootstrap(): Promise<void> {
   // the API, and it describes the inside of the system: route names, latencies,
   // event-loop health. A separate port is simply not routed by the load
   // balancer, which is a stronger boundary than a path nobody links to.
+  // Before serving anything, so the checkout ratio has a numerator from the
+  // first scrape. See initCheckoutMetrics: an absent completions series makes
+  // the alert silent in exactly the total-outage case.
+  initCheckoutMetrics();
+
   const pipeline = app.get(PipelineMetrics);
   startMetricsServer(config.get("METRICS_PORT", { infer: true }), app.get(JsonLogger), () =>
     pipeline.refresh(),

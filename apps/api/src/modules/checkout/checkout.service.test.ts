@@ -8,6 +8,9 @@ import { OrdersService } from "../orders/orders.service.js";
 import { CheckoutService } from "./checkout.service.js";
 import { ConfiguredRateTaxProvider } from "./tax.provider.js";
 import { CouponsService } from "../coupons/coupons.service.js";
+import { AppError } from "../../common/errors/app-error.js";
+import { classifyCheckoutFailure } from "../../infra/observability/checkout-metrics.js";
+import { registry as checkoutRegistry } from "../../infra/observability/metrics.js";
 
 /**
  * Runs as `bba_app`, the RLS-restricted role. Checkout crosses more policy
@@ -419,5 +422,154 @@ describe("stock reservation", () => {
     const level = await readStock(variantId);
     expect(level.reserved).toBe(1);
     expect(level.on_hand).toBe(1);
+  });
+});
+
+/**
+ * The funnel counters behind the 98% alert (docs/ops/observability.md §2).
+ *
+ * Driven through the real checkout against the real database rather than a
+ * mock, because what is being tested is which *outcomes* get counted as what,
+ * and those outcomes come from stock, RLS and the idempotency index — none of
+ * which a mock would reproduce faithfully.
+ */
+describe("checkout funnel metrics", () => {
+  /** The counter's value for one label set, defaulting to 0 when absent. */
+  async function counter(name: string, labels: Record<string, string>): Promise<number> {
+    const metric = await checkoutRegistry.getSingleMetric(name)?.get();
+    const match = metric?.values.find((v) =>
+      Object.entries(labels).every(([k, want]) => v.labels[k] === want),
+    );
+    return match?.value ?? 0;
+  }
+
+  const pickup = { method: "CASH", fulfillment: "PICKUP" };
+
+  /** Every counter's reading, so a test can assert on the delta it caused. */
+  async function snapshot() {
+    return {
+      attempts: await counter("checkout_attempts_total", pickup),
+      completions: await counter("checkout_completions_total", pickup),
+      replays: await counter("checkout_replays_total", pickup),
+      rejected: await counter("checkout_failures_total", { ...pickup, kind: "rejected" }),
+      errors: await counter("checkout_failures_total", { ...pickup, kind: "error" }),
+    };
+  }
+
+  it("counts a successful checkout as one attempt and one completion", async () => {
+    await cart.addItem(STORE, buyer, variantId, 1);
+    const before = await snapshot();
+
+    await place();
+
+    const after = await snapshot();
+    expect(after.attempts - before.attempts).toBe(1);
+    expect(after.completions - before.completions).toBe(1);
+    expect(after.errors - before.errors).toBe(0);
+  });
+
+  it("counts a replay as a replay, not as a second attempt", async () => {
+    // Otherwise a shopper on a poor connection retrying a request whose
+    // response was lost drags the ratio down, and the alert ends up measuring
+    // their signal strength rather than the platform.
+    await cart.addItem(STORE, buyer, variantId, 1);
+    const key = crypto.randomUUID();
+    const before = await snapshot();
+
+    const first = await checkout.placeOrder(STORE, buyer, { fulfillment: "PICKUP", idempotencyKey: key });
+    const second = await checkout.placeOrder(STORE, buyer, { fulfillment: "PICKUP", idempotencyKey: key });
+    expect(second.id).toBe(first.id);
+
+    const after = await snapshot();
+    expect(after.attempts - before.attempts).toBe(1);
+    expect(after.completions - before.completions).toBe(1);
+    expect(after.replays - before.replays).toBe(1);
+  });
+
+  it("counts a sold-out item as a rejection, never as an error", async () => {
+    // The single most important line here. Selling out is the system working,
+    // and if it counted as a failed checkout every busy evening would page
+    // somebody who cannot do anything about it.
+    await stock(variantId, 0);
+    await cart.addItem(STORE, buyer, variantId, 1);
+    const before = await snapshot();
+
+    await expect(place()).rejects.toThrow();
+
+    const after = await snapshot();
+    expect(after.attempts - before.attempts).toBe(1);
+    expect(after.rejected - before.rejected).toBe(1);
+    expect(after.errors - before.errors).toBe(0);
+    expect(after.completions - before.completions).toBe(0);
+  });
+
+  it("counts an empty cart as a rejection", async () => {
+    const before = await snapshot();
+
+    await expect(place()).rejects.toThrow();
+
+    const after = await snapshot();
+    expect(after.rejected - before.rejected).toBe(1);
+    expect(after.errors - before.errors).toBe(0);
+  });
+
+  it("keeps attempts equal to completions plus failures", async () => {
+    // The invariant the alert's ratio depends on. If attempts can grow without
+    // a matching outcome, the ratio drifts downward on its own and the alert
+    // eventually fires at rest.
+    const before = await snapshot();
+
+    await cart.addItem(STORE, buyer, variantId, 1);
+    await place();
+    await expect(place()).rejects.toThrow(); // cart now empty: rejected
+
+    const after = await snapshot();
+    const attempts = after.attempts - before.attempts;
+    const outcomes =
+      after.completions - before.completions +
+      (after.rejected - before.rejected) +
+      (after.errors - before.errors);
+    expect(attempts).toBe(outcomes);
+  });
+
+  it("labels delivery separately from pickup", async () => {
+    await cart.addItem(STORE, buyer, variantId, 1);
+    const before = await counter("checkout_failures_total", {
+      method: "CASH",
+      fulfillment: "DELIVERY",
+      kind: "rejected",
+    });
+
+    // No address supplied, so this is refused rather than attempted.
+    await expect(place({ fulfillment: "DELIVERY" })).rejects.toThrow();
+
+    const after = await counter("checkout_failures_total", {
+      method: "CASH",
+      fulfillment: "DELIVERY",
+      kind: "rejected",
+    });
+    expect(after - before).toBe(1);
+  });
+});
+
+describe("classifying a checkout failure", () => {
+  it("treats a 4xx as the system working and a 5xx as the system failing", () => {
+    expect(classifyCheckoutFailure(AppError.validation("empty"))).toEqual({
+      kind: "rejected",
+      reason: "VALIDATION_FAILED",
+    });
+    expect(classifyCheckoutFailure(AppError.internal("boom"))).toEqual({
+      kind: "error",
+      reason: "INTERNAL_ERROR",
+    });
+  });
+
+  it("treats anything it does not recognise as an error", () => {
+    // An unclassified throw is the most alarming kind, not the least: nothing
+    // in the system decided it was acceptable.
+    expect(classifyCheckoutFailure(new TypeError("undefined is not a function"))).toEqual({
+      kind: "error",
+      reason: "UNEXPECTED",
+    });
   });
 });
