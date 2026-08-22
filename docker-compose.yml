@@ -1,12 +1,19 @@
 # Local development and CI services (plan §7.1, §14.2).
 #
-# Deliberately only the backing services — Postgres and Redis — not the API and
+# By default only the backing services — Postgres and Redis — not the API and
 # web apps. Those run on the host with hot reload, which is what you want while
 # writing code; containerising them would mean a rebuild per change and buy
 # nothing locally. CI needs exactly these two, disposable.
 #
 #   docker compose up -d
 #   cd apps/api && npx prisma migrate deploy && npm run seed:dev
+#
+# The three application services below are behind the `apps` profile, so they
+# start only when asked for and the command above is unchanged. They exist to
+# run the real images — the same ones ECS runs — when what you are checking is
+# the image rather than the code:
+#
+#   docker compose --profile apps up --build
 #
 # The `bba_app` role and every extension are created by migration
 # 00000000000001, so a fresh container needs no init scripts — `migrate deploy`
@@ -65,6 +72,56 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # ── The real images, behind a profile ──────────────────────────────────────
+  # api and worker are one image with two commands. See apps/api/Dockerfile for
+  # why: two builds are two chances to run a worker whose code differs from the
+  # API that enqueues its work, and that divergence is silent.
+  api:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://bba_app@postgres:5432/bba_dev?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      LOG_FORMAT: json
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["node", "dist/worker/main.js"]
+    environment:
+      DATABASE_URL: postgresql://bba_app@postgres:5432/bba_dev?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      LOG_FORMAT: json
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      # The service name, not localhost: inside the network the API is a
+      # different host, and localhost would be this container talking to itself.
+      API_ORIGIN: http://api:3001
+      NODE_ENV: production
+    ports:
+      - "3100:3000"
+    depends_on:
+      - api
 
 volumes:
   postgres-data:

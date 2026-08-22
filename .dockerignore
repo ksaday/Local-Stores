@@ -1,0 +1,38 @@
+# Everything the build should never see.
+#
+# The first two lines matter most. Copying a host `node_modules` into the image
+# is how a macOS Prisma engine — libquery_engine-darwin-arm64.dylib.node — ends
+# up in a Linux container, where it fails at the first query with an error that
+# says nothing about architecture. `dist` and `.next` are the same hazard for
+# compiled output: stale artefacts that silently win over what the build just
+# produced.
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+.turbo
+**/.turbo
+
+# Secrets. `.env.example` is deliberately kept — it is documentation.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+.git
+.github
+**/*.log
+
+# Test and audit output, none of which belongs in a runtime image.
+coverage
+playwright-report
+test-results
+
+# Docs and plans: large, and nothing at runtime reads them.
+docs
+README.md
+**/*.md
+!package.json
