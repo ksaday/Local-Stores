@@ -109,7 +109,13 @@ export default async function ReportsPage({
         />
       </div>
 
-      <Card title="Takings" description={`Net of discounts and refunds, by ${report.grain}.`}>
+      <Card
+        title="Takings"
+        description={`Net of discounts and refunds, by ${report.grain}.`}
+        actions={
+          <Download href={`/api/stores/${storeId}/reports/sales?${query}`}>Export CSV</Download>
+        }
+      >
         {report.points.length === 0 ? (
           <p className="text-sm text-ink-muted">
             Nothing sold in this period yet. Figures update within about fifteen minutes of an
@@ -124,7 +130,17 @@ export default async function ReportsPage({
         )}
       </Card>
 
-      <Card title="Best sellers" description="By revenue, over the selected period.">
+      <Card
+        title="Best sellers"
+        description="By revenue, over the selected period."
+        actions={
+          <Download
+            href={`/api/stores/${storeId}/reports/products?${query.replace(/&grain=\w+/, "")}`}
+          >
+            Export CSV
+          </Download>
+        }
+      >
         {!products || products.length === 0 ? (
           <p className="text-sm text-ink-muted">Nothing sold in this period yet.</p>
         ) : (
@@ -171,6 +187,9 @@ export default async function ReportsPage({
           // range control and this is not. A snapshot under a date filter
           // invites somebody to read it as "stock during March".
           description="What is on the shelves right now — the period above doesn't apply."
+          actions={
+            <Download href={`/api/stores/${storeId}/reports/stock`}>Export CSV</Download>
+          }
         >
           {stock.linesCounted === 0 ? (
             <p className="text-sm text-ink-muted">
@@ -324,6 +343,23 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
       <p className="mt-1 text-2xl font-semibold text-ink">{value}</p>
       {hint && <p className="mt-1 text-sm text-ink-muted">{hint}</p>}
     </div>
+  );
+}
+
+/**
+ * A download, so it is an anchor.
+ *
+ * Not a button with an onClick: this is a navigation to a file, which is what
+ * an anchor is for, and it works before the page has hydrated.
+ */
+function Download({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      className="tap-target rounded-card border border-line px-4 py-2 text-sm text-ink"
+    >
+      {children}
+    </a>
   );
 }
 

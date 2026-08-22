@@ -91,6 +91,14 @@ export default async function CustomersPage({
 
       <Card
         title="Customers"
+        actions={
+          <a
+            href={`/api/stores/${storeId}/reports/customers`}
+            className="tap-target rounded-card border border-line px-4 py-2 text-sm text-ink"
+          >
+            Export CSV
+          </a>
+        }
         description={
           list.total === 0
             ? "Nobody has ordered with an account yet."

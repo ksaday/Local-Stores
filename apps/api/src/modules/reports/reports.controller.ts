@@ -1,7 +1,11 @@
-import { Controller, Get, Param, Query } from "@nestjs/common";
+import { Controller, Get, Param, Query, Res } from "@nestjs/common";
+import type { Response } from "express";
+import { AppError } from "../../common/errors/app-error.js";
+import { RawResponse } from "../../common/interceptors/response-envelope.interceptor.js";
 import { z } from "zod";
 import { RequirePermission } from "../../common/decorators/require-permission.decorator.js";
 import { zodQuery } from "../../common/pipes/zod-validation.pipe.js";
+import { ReportsCsvService, type ExportKind } from "./reports-csv.service.js";
 import { ReportsService } from "./reports.service.js";
 
 const SalesQuerySchema = z
@@ -17,6 +21,16 @@ const CustomersQuerySchema = z
     limit: z.coerce.number().int().min(1).max(200).optional(),
     offset: z.coerce.number().int().min(0).optional(),
     sort: z.enum(["spend", "recent"]).optional(),
+  })
+  .strict();
+
+const EXPORT_KINDS: ExportKind[] = ["sales", "products", "customers", "stock"];
+
+const ExportQuerySchema = z
+  .object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.").optional(),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.").optional(),
+    grain: z.enum(["day", "week", "month"]).optional(),
   })
   .strict();
 
@@ -38,7 +52,10 @@ const TopProductsQuerySchema = z
  */
 @Controller({ path: "stores/:storeId/reports", version: "1" })
 export class ReportsController {
-  constructor(private readonly reports: ReportsService) {}
+  constructor(
+    private readonly reports: ReportsService,
+    private readonly csv: ReportsCsvService,
+  ) {}
 
   /** Today / 7 days / 30 days, for the ops dashboard. */
   @Get("summary")
@@ -82,6 +99,65 @@ export class ReportsController {
   @RequirePermission("inventory:read")
   stock(@Param("storeId") storeId: string) {
     return this.reports.stockValuation(storeId);
+  }
+
+  /**
+   * Any of the reports as a spreadsheet.
+   *
+   * One route rather than four, because the difference between them is the
+   * query and nothing else — the permission, the range parsing and the
+   * download headers are identical.
+   *
+   * Generated in the request. ADR 0004 has the measurement; the largest export
+   * a shop can ask for here is about a third of a second.
+   */
+  @Get("export/:kind.csv")
+  @RawResponse()
+  @RequirePermission("reports:sales")
+  async exportCsv(
+    @Param("storeId") storeId: string,
+    @Param("kind") kind: string,
+    @Query(zodQuery(ExportQuerySchema)) query: z.infer<typeof ExportQuerySchema>,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<string> {
+    if (!EXPORT_KINDS.includes(kind as ExportKind)) {
+      throw AppError.notFound("There is no such export.");
+    }
+    const exportKind = kind as ExportKind;
+
+    // Dated exports need a range; the snapshots do not.
+    if ((exportKind === "sales" || exportKind === "products") && (!query.from || !query.to)) {
+      throw AppError.validation("That export needs a date range.", [
+        { field: "from", code: "REQUIRED", message: "Give a from and a to." },
+      ]);
+    }
+
+    const [body, filename] = await Promise.all([
+      this.body(exportKind, storeId, query),
+      this.csv.filename(storeId, exportKind, query.from, query.to),
+    ]);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Cache-Control", "no-store");
+    return body;
+  }
+
+  private body(
+    kind: ExportKind,
+    storeId: string,
+    query: z.infer<typeof ExportQuerySchema>,
+  ): Promise<string> {
+    switch (kind) {
+      case "sales":
+        return this.csv.sales(storeId, { from: query.from!, to: query.to!, grain: query.grain });
+      case "products":
+        return this.csv.products(storeId, { from: query.from!, to: query.to! });
+      case "customers":
+        return this.csv.customers(storeId);
+      case "stock":
+        return this.csv.stock(storeId);
+    }
   }
 
   @Get("top-products")

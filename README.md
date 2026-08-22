@@ -29,8 +29,8 @@ requirements are specific rather than speculative ([§18.2](docs/plan/18-final-r
 ## Status
 
 **Phases 2, 4, 5, 7, 8 and 9 complete; Phase 10 started and Phase 11's
-accessibility work done; the worker, the outbox and billing are in.** 585 tests
-passing. A shop can list products, take an order online or over the counter,
+accessibility work done; the worker, the outbox and billing are in.** 608 tests
+passing (585 in the API, 23 in `packages/shared`). A shop can list products, take an order online or over the counter,
 work the queue, take cash or card, refund, print a receipt, run a promotion,
 send a parcel out with a driver, get a photograph and a signature back, be
 billed for the platform itself, and read back what it all came to.
