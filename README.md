@@ -563,6 +563,21 @@ directories — and the route overrides helmet's `Cross-Origin-Resource-Policy`
 to `cross-origin`, without which the browser refuses to render every image
 while `curl` fetches them happily.
 
+## Running it in anger
+
+[`docs/ops/observability.md`](docs/ops/observability.md) is what the system
+should report about itself: SLOs with error budgets derived from §3, the
+metrics that have to exist for §14.5's alert policy to work, and what logs and
+traces should carry. It is explicit that almost none of it is emitted yet —
+there is no metrics client in the code at all — because an observability plan
+that reads as though it is already in place is worse than none. The order to
+build them in is at the end.
+
+[`docs/ops/runbooks.md`](docs/ops/runbooks.md) is one runbook per alert that
+wakes somebody up, written for the person who was asleep ten minutes ago and
+did not write the code. Every query in it was run against a real database
+before it was committed; two were wrong when they were not.
+
 ## Local development
 
 Prerequisites: Node 22, and Postgres 16 plus Redis running somewhere. The
