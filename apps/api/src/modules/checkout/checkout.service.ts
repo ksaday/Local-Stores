@@ -7,7 +7,6 @@ import {
   checkoutFailures,
   checkoutReplays,
   classifyCheckoutFailure,
-  PAYMENT_METHOD,
 } from "../../infra/observability/checkout-metrics.js";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
@@ -77,15 +76,19 @@ export interface PlaceOrderRequest extends QuoteRequest {
 const PENDING_TTL_MINUTES = 30;
 
 /**
- * The payment provider every online order is written with, shared with the
- * metric that labels by it so the two cannot drift when Stripe lands.
+ * The placeholder provider every order's first payment row is written with.
+ *
+ * Not a statement about how the order will be paid — the shopper has not chosen
+ * yet. If they pay by card, `createCardPayment` adds a STRIPE row and
+ * `retireSupersededPayments` cancels this one. That is exactly why the checkout
+ * metrics carry no `method` label: at this moment nobody knows.
  *
  * Cast at every use: `provider` is a Postgres enum, and a bound parameter
  * arrives as text with no implicit cast to it. The literal this replaced needed
  * no cast, which is why swapping one for the other broke every order-placing
  * test until the cast went back in.
  */
-const PAYMENT_PROVIDER = PAYMENT_METHOD;
+const PAYMENT_PROVIDER = "CASH";
 
 @Injectable()
 export class CheckoutService {
@@ -169,7 +172,7 @@ export class CheckoutService {
    */
   async placeOrder(storeId: string, shopper: Shopper, request: PlaceOrderRequest) {
     const store = await this.requireLiveStore(storeId);
-    const labels = { method: PAYMENT_PROVIDER, fulfillment: request.fulfillment };
+    const labels = { fulfillment: request.fulfillment };
 
     const existing = await this.findByIdempotencyKey(storeId, shopper, request.idempotencyKey);
     // A replay is the same checkout, not a new one: its attempt and completion

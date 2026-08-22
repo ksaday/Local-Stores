@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { paymentOutcomes } from "../../infra/observability/payment-metrics.js";
 import { randomUUID } from "node:crypto";
 import {
   InvalidTransitionError,
@@ -401,6 +402,11 @@ export class OrdersService {
         SET status = 'SUCCEEDED', cash_received_by = ${actorUserId}, cash_received_at = now(), updated_at = now()
         WHERE id = ${payment.id}
       `;
+
+      // Counted here rather than on the double-tap path above: an
+      // already-collected payment returns early, and counting it again would
+      // report takings a clerk never took.
+      paymentOutcomes.inc({ provider: "CASH", outcome: "succeeded", reason: "none" });
 
       await this.audit.record({
         storeId,

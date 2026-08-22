@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import Stripe from "stripe";
 import { StripePaymentProvider } from "./stripe.provider.js";
+import { stripeCallDuration } from "../observability/payment-metrics.js";
 
 /**
  * Asserts what we send to Stripe, not what Stripe sends back.
@@ -265,5 +266,51 @@ describe("webhook verification", () => {
     await expect(
       provider.parseWebhook(Buffer.from('{"id":"evt_1"}'), ""),
     ).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+/**
+ * That the timing wrapper is actually wired into the real provider methods.
+ *
+ * `payment-metrics.test.ts` proves `timeStripeCall` records and rethrows, but
+ * it proves it about a helper called directly. This is the other half: that the
+ * helper is reached by going through `StripePaymentProvider` itself. Without
+ * it, a method that was never wrapped — or was wrapped and then edited apart —
+ * would leave a silent hole, since the symptom is an absent metric rather than
+ * a failing call.
+ */
+describe("stripe call timing", () => {
+  it("records the operation that was actually invoked", async () => {
+    stripeCallDuration.reset();
+    nextResponse = {
+      id: "pi_timing",
+      client_secret: "cs_timing",
+      status: "requires_payment_method",
+    };
+
+    await provider.createIntent({
+      storeId: "store_1",
+      orderId: "order_1",
+      orderNumber: "TIM-0001",
+      amountCents: 500,
+      currency: "usd",
+      destinationAccountId: "acct_1",
+      idempotencyKey: "key_timing",
+      customerEmail: null,
+    });
+
+    const values = (await stripeCallDuration.get()).values as {
+      labels: Record<string, unknown>;
+      value: number;
+      metricName?: string;
+    }[];
+    const count = values.find(
+      (v) =>
+        v.metricName === "stripe_call_duration_seconds_count" &&
+        v.labels.operation === "createIntent" &&
+        v.labels.outcome === "ok",
+    );
+
+    expect(count?.value).toBe(1);
   });
 });

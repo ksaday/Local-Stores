@@ -101,8 +101,34 @@ Also check `checkout_replays_total`. A sharp rise means clients are retrying
 because they never got a response, which points at timeouts or a proxy rather
 than at checkout itself.
 
-Then, to separate "we are broken" from "cards are being declined" — the
-`payment_outcomes` metric exists to tell those apart, and is not built yet:
+Then separate "we are broken" from "cards are being declined":
+
+```promql
+sum by (provider, outcome, reason) (rate(payment_outcomes_total[10m]))
+```
+
+A wall of `outcome="failed"` with one dominant `reason` is a payments story, not
+an availability one, and the reason says whose:
+
+| Dominant reason | Reading |
+|---|---|
+| `insufficient_funds` | Shoppers, not us. Common at month end. Nothing to fix. |
+| `do_not_honor`, `generic_decline` | Issuer-side and usually noise, unless the share jumps sharply — then suspect a fraud rule or a Connect account problem. |
+| `expired_card`, `incorrect_cvc` | Shopper input. If these spike, suspect the payment form rather than Stripe. |
+| `unknown` / `other` | Stripe returned no code, or one that did not look like a decline code. Read the payment's `failure_reason` in the database for the full message. |
+
+If Stripe is slow rather than declining, that shows up separately — third-party
+time is excluded from the checkout SLO, so it registers nowhere else:
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, operation) (rate(stripe_call_duration_seconds_bucket[10m])))
+```
+
+Watch `outcome="error"` on the same metric: slow-and-succeeding is Stripe being
+slow, while slow-and-throwing is usually our 15s client timeout being hit.
+
+Then, on the orders themselves:
 
 ```sql
 SELECT status, count(*) FROM orders

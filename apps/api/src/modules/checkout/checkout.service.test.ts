@@ -443,7 +443,7 @@ describe("checkout funnel metrics", () => {
     return match?.value ?? 0;
   }
 
-  const pickup = { method: "CASH", fulfillment: "PICKUP" };
+  const pickup = { fulfillment: "PICKUP" };
 
   /** Every counter's reading, so a test can assert on the delta it caused. */
   async function snapshot() {
@@ -535,7 +535,6 @@ describe("checkout funnel metrics", () => {
   it("labels delivery separately from pickup", async () => {
     await cart.addItem(STORE, buyer, variantId, 1);
     const before = await counter("checkout_failures_total", {
-      method: "CASH",
       fulfillment: "DELIVERY",
       kind: "rejected",
     });
@@ -544,7 +543,6 @@ describe("checkout funnel metrics", () => {
     await expect(place({ fulfillment: "DELIVERY" })).rejects.toThrow();
 
     const after = await counter("checkout_failures_total", {
-      method: "CASH",
       fulfillment: "DELIVERY",
       kind: "rejected",
     });

@@ -48,11 +48,14 @@ import { registry } from "./metrics.js";
 /**
  * Labels shared by all three counters.
  *
- * `method` has exactly one possible value today — payments are written as CASH
- * and Stripe is a later phase. It is here anyway because adding a label later
- * changes the series identity and silently breaks every recorded rule and
- * dashboard built on the old one. It is sourced from the same constant the
- * payment row is written with, so the two cannot drift apart.
+ * There is deliberately no `method`, though the spec's table asks for one.
+ * **At this point in the flow there is no payment method yet.** Placing an
+ * order writes a placeholder CASH payment row; paying by card happens
+ * afterwards through `createCardPayment`, and the placeholder is retired when
+ * that succeeds. A `method` label here could only ever read "CASH", including
+ * for orders that were paid by card — a label that is not merely uninformative
+ * but actively wrong. How people actually pay is `payment_outcomes`, which
+ * observes the payment rather than the checkout.
  *
  * `fulfillment` is not in the spec's table. It is two values, and it separates
  * failures that only delivery can have — address validation, distance quoting —
@@ -60,40 +63,27 @@ import { registry } from "./metrics.js";
  * one subsystem immediately.
  */
 export interface CheckoutLabels {
-  method: string;
   fulfillment: string;
 }
-
-/**
- * The payment provider every online order is written with today, and the value
- * of the `method` label.
- *
- * Defined here, and imported by the checkout service for the `payments` INSERT,
- * so one constant serves both. It sits in the metrics file rather than the
- * service only because the service already depends on this module and the
- * reverse would be a cycle — the domain still owns the meaning, and whoever
- * adds Stripe changes this line and finds both uses from it.
- */
-export const PAYMENT_METHOD = "CASH";
 
 export const checkoutAttempts = new Counter({
   name: "checkout_attempts_total",
   help: "Place-order requests the system took responsibility for. Excludes idempotent replays.",
-  labelNames: ["method", "fulfillment"],
+  labelNames: ["fulfillment"],
   registers: [registry],
 });
 
 export const checkoutCompletions = new Counter({
   name: "checkout_completions_total",
   help: "Checkouts that ended with the shopper having an order.",
-  labelNames: ["method", "fulfillment"],
+  labelNames: ["fulfillment"],
   registers: [registry],
 });
 
 export const checkoutFailures = new Counter({
   name: "checkout_failures_total",
   help: "Checkouts that did not produce an order. kind=rejected is the system working; kind=error is the system failing.",
-  labelNames: ["method", "fulfillment", "kind", "reason"],
+  labelNames: ["fulfillment", "kind", "reason"],
   registers: [registry],
 });
 
@@ -112,7 +102,7 @@ export const checkoutFailures = new Counter({
 export const checkoutReplays = new Counter({
   name: "checkout_replays_total",
   help: "Place-order requests answered from an existing order under the same idempotency key.",
-  labelNames: ["method", "fulfillment"],
+  labelNames: ["fulfillment"],
   registers: [registry],
 });
 
@@ -145,7 +135,7 @@ type _AllFulfillmentsListed =
  */
 export function initCheckoutMetrics(): void {
   for (const fulfillment of FULFILLMENTS) {
-    const labels = { method: PAYMENT_METHOD, fulfillment };
+    const labels = { fulfillment };
     checkoutAttempts.inc(labels, 0);
     checkoutCompletions.inc(labels, 0);
     checkoutReplays.inc(labels, 0);

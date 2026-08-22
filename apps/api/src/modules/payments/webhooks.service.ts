@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { declineReason, paymentOutcomes } from "../../infra/observability/payment-metrics.js";
 import { randomUUID } from "node:crypto";
 import { isUniqueViolation } from "../../infra/prisma/prisma-errors.js";
 import { PrismaService } from "../../infra/prisma/prisma.service.js";
@@ -162,6 +163,13 @@ export class StripeWebhooksService {
    */
   private async onPaymentSucceeded(event: ProviderEvent, storeId: string | null): Promise<void> {
     const intentId = event.data.id as string;
+
+    // Counted before anything can return early. The money moved at Stripe
+    // whatever we manage to do about it locally, and a metric that only counts
+    // the payments we successfully recorded would understate takings in exactly
+    // the situation worth knowing about.
+    paymentOutcomes.inc({ provider: "STRIPE", outcome: "succeeded", reason: "none" });
+
     if (!storeId) {
       this.logger.warn(`payment_intent.succeeded ${intentId} has no resolvable store`);
       return;
@@ -200,9 +208,22 @@ export class StripeWebhooksService {
 
   private async onPaymentFailed(event: ProviderEvent, storeId: string | null): Promise<void> {
     const intentId = event.data.id as string;
+
+    const error = event.data.last_payment_error as
+      | { message?: string; code?: unknown; decline_code?: unknown }
+      | undefined;
+
+    // The decline code, not the message: the code is a bounded set Stripe
+    // documents, the message is free text that varies by card and issuer and
+    // would be an unbounded label. See `declineReason`.
+    paymentOutcomes.inc({
+      provider: "STRIPE",
+      outcome: "failed",
+      reason: declineReason(error),
+    });
+
     if (!storeId) return;
 
-    const error = event.data.last_payment_error as { message?: string } | undefined;
 
     // The order is deliberately left PENDING rather than cancelled: a declined
     // card is usually followed by a second attempt with a different one, and
